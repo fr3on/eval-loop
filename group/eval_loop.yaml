@@ -1,0 +1,57 @@
+settings:
+  - name: app
+    type: app-selector
+    scope: chat
+    required: true
+    label:
+      en_US: App
+    placeholder:
+      en_US: The Dify chat app whose logs you want to evaluate
+  - name: dify_base_url
+    type: text-input
+    required: true
+    label:
+      en_US: Dify API Base URL
+    placeholder:
+      en_US: "e.g. https://api.dify.ai/v1 or https://your-self-hosted-instance/v1"
+    default: "https://api.dify.ai/v1"
+  - name: dify_api_key
+    type: secret-input
+    required: true
+    label:
+      en_US: App API Key
+    placeholder:
+      en_US: The selected app's own Service API key (used to pull conversations, messages, and feedback)
+  - name: target_users
+    type: text-input
+    required: true
+    label:
+      en_US: Target End Users
+    placeholder:
+      en_US: "Comma-separated Dify end-user identifiers to pull conversations for, e.g. slack-C0123,slack-D0456"
+  - name: eval_model
+    type: model-selector
+    scope: llm
+    required: true
+    label:
+      en_US: Eval Model
+    placeholder:
+      en_US: The model used to judge each Q&A's correctness and reusability
+  - name: lookback_days
+    type: text-input
+    required: false
+    label:
+      en_US: Lookback Window (days)
+    placeholder:
+      en_US: "How many days back to pull conversations from, e.g. 1"
+    default: "1"
+  - name: max_messages
+    type: text-input
+    required: false
+    label:
+      en_US: Max Messages Per Run
+    placeholder:
+      en_US: "Safety cap on how many messages to evaluate in one run, e.g. 50"
+    default: "50"
+endpoints:
+  - endpoints/run.yaml
