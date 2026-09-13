@@ -33,7 +33,7 @@ Real user feedback (like/dislike), where already recorded on a message, is passe
 | App | Yes | The Dify chat app whose logs you want to evaluate. |
 | Dify API Base URL | Yes | The base URL of the Dify instance hosting that app, e.g. `https://api.dify.ai/v1` or your self-hosted instance's `/v1` URL. |
 | App API Key | Yes | The selected app's own Service API key. Used to call that app's `/conversations` and `/messages` endpoints directly - the plugin SDK's built-in invocation doesn't expose log access, only chat/completion/workflow calls. |
-| Target End Users | Yes | Comma-separated Dify end-user identifiers to pull conversations for, e.g. `slack-C0123,slack-D0456`. Dify's API scopes conversation listing per end user, so there's no way to list "everyone" - you tell it who to check. |
+| Target End Users | Yes | Comma-separated Dify end-user identifiers to pull conversations for, e.g. `user-123,user-456`. Dify's API scopes conversation listing per end user, so there's no way to list "everyone" - you tell it who to check. |
 | Eval Model | Yes | The model used to judge each Q&A pair. |
 | Lookback Window (days) | No | How many days back to pull conversations from. Default: `1`. |
 | Max Messages Per Run | No | Safety cap on how many messages to evaluate in one run. Default: `50`. |
@@ -47,7 +47,7 @@ https://github.com/fr3on/eval-loop
 ### Setup
 
 1. In the Dify app you want to evaluate, go to **API Access** and generate (or copy) a Service API key.
-2. Note the app's `user` identifiers - whatever string your integration passes as `user` when invoking the app (e.g. a Slack bot passing `slack-{channel}`). If your integration doesn't set this explicitly, every conversation falls back to one shared default user, and you can pass that instead.
+2. Note the app's `user` identifiers - whatever string is passed as `user` when the app is invoked (via the chat API, a workflow, or any client integration). If nothing sets this explicitly, every conversation falls back to one shared default user, and you can pass that instead.
 3. Install this plugin, select the target app, and fill in the base URL, API key, and target end users.
 4. Pick an Eval Model - any LLM configured in your workspace.
 
@@ -70,7 +70,7 @@ A successful run returns:
   "evaluated": 12,
   "results": [
     {
-      "user": "slack-C0123",
+      "user": "user-123",
       "conversation_id": "...",
       "message_id": "...",
       "created_at": 1735689600,

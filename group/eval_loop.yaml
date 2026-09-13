@@ -28,7 +28,7 @@ settings:
     label:
       en_US: Target End Users
     placeholder:
-      en_US: "Comma-separated Dify end-user identifiers to pull conversations for, e.g. slack-C0123,slack-D0456"
+      en_US: "Comma-separated Dify end-user identifiers to pull conversations for, e.g. user-123,user-456"
   - name: eval_model
     type: model-selector
     scope: llm
