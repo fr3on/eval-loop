@@ -1,12 +1,14 @@
 """Eval Loop endpoint.
 
-Pulls a linked Dify app's real conversation logs - question/answer pairs,
+Pulls a linked Dify app's real conversation logs - message/answer pairs,
 any user feedback already attached to each message, and the actual
 knowledge-base passages that were retrieved for each answer (Dify embeds
 these in every message when retriever_resource is enabled, so no separate
 knowledge-base access is needed) - and judges each one with an LLM for
 groundedness, relevance, correctness, and reusability. Returns a structured
-report; this does not create annotations or modify anything.
+report, and optionally saves it as a Document in a Dify Knowledge Base if
+configured. This never creates annotations or otherwise modifies the
+evaluated app.
 """
 
 import json
@@ -28,7 +30,7 @@ You may be given the actual knowledge-base passages that were retrieved and avai
 
 Not every message needs a substantive, KB-grounded answer. A greeting, an off-topic request, or anything outside what this agent is meant to handle may correctly receive a brief acknowledgment, decline, or redirect instead - judge such a response on whether it's the *appropriate* reply to that message, not on whether it happens to cite a knowledge-base passage. A deliberate redirect isn't a factual claim, so don't mark it ungrounded just because no passage discusses the off-topic subject. Only genuine in-scope questions need to be checked for substantive, grounded correctness.
 
-For the given question/answer pair, judge:
+For the given message/answer pair, judge:
 - "grounded": for a genuine in-scope question, whether the answer is actually supported by the retrieved passages, with no claims that go beyond or contradict them. For a greeting/off-topic/out-of-scope message where a brief decline or redirect is the appropriate reply, a correct redirect counts as grounded.
 - "relevant": whether the answer is the *appropriate* response to what the user was asking or trying to accomplish - which can be a redirect or brief acknowledgment when that's the right call, not only a literal on-topic answer.
 - "correct": your overall judgment of accuracy and appropriateness, combining groundedness and relevance.
@@ -186,21 +188,65 @@ class RunEndpoint(Endpoint):
                 errors.append(f"[{user}] failed to list conversations: {e}")
                 continue
 
+        report: Dict[str, Any] = {
+            "app_id": app_id,
+            "lookback_days": lookback_days,
+            "evaluated": len(results),
+            "results": results,
+            "errors": errors,
+            "summary_markdown": self._build_summary_markdown(results, errors),
+        }
+
+        if settings.get("save_to_dataset", False):
+            dataset_id = settings.get("dataset_id")
+            dataset_api_key = settings.get("dataset_api_key")
+            if not dataset_id or not dataset_api_key:
+                report["saved_to_dataset"] = {
+                    "saved": False,
+                    "error": "'Save Report to Knowledge Base' is on, but Knowledge Base ID/API Key is missing.",
+                }
+            else:
+                report["saved_to_dataset"] = self._save_report_to_dataset(
+                    base_url, dataset_id, dataset_api_key, report["summary_markdown"]
+                )
+
         return Response(
             status=200,
-            response=json.dumps(
-                {
-                    "app_id": app_id,
-                    "lookback_days": lookback_days,
-                    "evaluated": len(results),
-                    "results": results,
-                    "errors": errors,
-                },
-                indent=2,
-                ensure_ascii=False,
-            ),
+            response=json.dumps(report, indent=2, ensure_ascii=False),
             content_type="application/json",
         )
+
+    def _save_report_to_dataset(
+        self, base_url: str, dataset_id: str, dataset_api_key: str, summary_markdown: str
+    ) -> Dict[str, Any]:
+        """Saves the report as a new Document in a Dify Knowledge Base, using
+        the dataset's own API key - Dataset endpoints are authenticated
+        separately from App endpoints, so this is deliberately not reusing
+        the App API Key setting. Failure here doesn't affect the eval report
+        itself, which has already been computed by this point."""
+        try:
+            resp = requests.post(
+                f"{base_url}/datasets/{dataset_id}/document/create-by-text",
+                headers={"Authorization": f"Bearer {dataset_api_key}", "Content-Type": "application/json"},
+                json={
+                    "name": f"Eval Loop Report - {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
+                    "text": summary_markdown,
+                    "indexing_technique": "high_quality",
+                },
+                timeout=30,
+            )
+        except Exception as e:
+            return {"saved": False, "error": str(e)}
+
+        if resp.status_code not in (200, 201):
+            return {"saved": False, "error": f"{resp.status_code}: {resp.text[:300]}"}
+
+        data = resp.json()
+        return {
+            "saved": True,
+            "document_id": (data.get("document") or {}).get("id"),
+            "batch": data.get("batch"),
+        }
 
     def _collect_from_conversation(
         self,
@@ -222,9 +268,13 @@ class RunEndpoint(Endpoint):
             for msg in client.iter_messages(conv["id"], user, cutoff_ts):
                 if len(results) >= max_messages:
                     return
-                question = (msg.get("query") or "").strip()
+                # Dify's own field is called "query" - it's whatever the user
+                # typed, not necessarily a literal question (could be a
+                # greeting, an acknowledgment, small talk, etc.). Keep that
+                # framing rather than mislabeling every turn as a "question".
+                message = (msg.get("query") or "").strip()
                 answer = (msg.get("answer") or "").strip()
-                if not question or not answer:
+                if not message or not answer:
                     continue
 
                 feedback = (msg.get("feedback") or {}).get("rating")
@@ -233,7 +283,7 @@ class RunEndpoint(Endpoint):
                     for res in (msg.get("retriever_resources") or [])
                     if res.get("content")
                 ]
-                verdict = self._evaluate(eval_model, instruction, question, answer, feedback, passages)
+                verdict = self._evaluate(eval_model, instruction, message, answer, feedback, passages)
 
                 results.append(
                     {
@@ -241,7 +291,7 @@ class RunEndpoint(Endpoint):
                         "conversation_id": conv["id"],
                         "message_id": msg["id"],
                         "created_at": msg.get("created_at"),
-                        "question": question,
+                        "message": message,
                         "answer": answer,
                         "feedback": feedback,
                         "retrieved_passage_count": len(passages),
@@ -255,12 +305,12 @@ class RunEndpoint(Endpoint):
         self,
         model_config: Mapping,
         instruction: str,
-        question: str,
+        message: str,
         answer: str,
         feedback: Optional[str],
         passages: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        user_content = f"Question: {question}\n\nAnswer: {answer}"
+        user_content = f"User message: {message}\n\nAgent's answer: {answer}"
         if passages:
             joined = "\n\n---\n\n".join(passages)
             user_content += f"\n\nRetrieved knowledge-base passages available when this answer was generated:\n{joined}"
@@ -297,6 +347,52 @@ class RunEndpoint(Endpoint):
                 "reusable": None,
                 "issue": f"eval error: {e}",
             }
+
+    @staticmethod
+    def _build_summary_markdown(results: List[Dict[str, Any]], errors: List[str]) -> str:
+        """A human-readable summary, meant to be displayed directly (e.g. as
+        a Dify Workflow node's output) instead of the raw JSON report."""
+        total = len(results)
+        if total == 0:
+            return "## Eval Loop Report\n\nNo messages found in the configured window." + (
+                f"\n\n**Run errors:**\n" + "\n".join(f"- {e}" for e in errors) if errors else ""
+            )
+
+        def count(field: str, value: Any) -> int:
+            return sum(1 for r in results if r["eval"].get(field) is value)
+
+        correct = count("correct", True)
+        grounded = count("grounded", True)
+        reusable = [r for r in results if r["eval"].get("reusable") is True]
+        flagged = [r for r in results if r["eval"].get("correct") is False]
+        eval_errors = [r for r in results if r["eval"].get("correct") is None]
+
+        def cell(text: str, limit: int = 80) -> str:
+            text = (text or "").replace("|", "\\|").replace("\n", " ")
+            return text if len(text) <= limit else text[: limit - 1] + "…"
+
+        lines = [
+            "## Eval Loop Report",
+            "",
+            f"- **Evaluated:** {total} message(s)",
+            f"- **Correct:** {correct}/{total} ({correct * 100 // total}%)",
+            f"- **Grounded:** {grounded}/{total}",
+            f"- **Reusable candidates:** {len(reusable)}",
+            f"- **Eval errors:** {len(eval_errors)}",
+            f"- **Run errors:** {len(errors)}",
+        ]
+
+        if flagged:
+            lines += ["", "### ⚠️ Flagged (incorrect)", "", "| User | Message | Answer | Issue |", "| --- | --- | --- | --- |"]
+            for r in flagged:
+                lines.append(
+                    f"| {cell(r['user'], 20)} | {cell(r['message'])} | {cell(r['answer'])} | {cell(r['eval'].get('issue', ''))} |"
+                )
+
+        if errors:
+            lines += ["", "### Run errors", ""] + [f"- {e}" for e in errors]
+
+        return "\n".join(lines)
 
     @staticmethod
     def _parse_int(value: Any, default: int) -> int:

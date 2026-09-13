@@ -13,16 +13,19 @@ Pulls a Dify chat app's real conversation logs and evaluates the Q&A for grounde
 - [Setup](#setup)
 - [Triggering a run](#triggering-a-run)
 - [Report format](#report-format)
+- [Viewing results in Dify](#viewing-results-in-dify)
 - [Support](#support)
 
 ### Why this exists
 
-Dify's Service API only lets you pull conversations/messages scoped to one end user at a time, and there's no built-in way to systematically review whether an agent's real answers are actually correct. This plugin closes that gap: it walks the conversation history for the end users you specify, and for each Q&A pair asks an LLM to judge:
+Dify's Service API only lets you pull conversations/messages scoped to one end user at a time, and there's no built-in way to systematically review whether an agent's real answers are actually correct. This plugin closes that gap: it walks the conversation history for the end users you specify, and for each message/answer pair asks an LLM to judge:
 
-- **Grounded** - is the answer actually supported by the knowledge-base passages that were retrieved for it (Dify attaches these to every message when the app has retrieval enabled), or does it go beyond/contradict them?
-- **Relevant** - does the answer address the question, or is it a deflection/non-answer?
-- **Correct** - overall accuracy, combining groundedness with general reasoning.
-- **Reusable** - is this a generalizable Q&A worth turning into permanent knowledge, or a one-off case tied to specific names/order IDs/dates?
+- **Grounded** - is the answer actually supported by the knowledge-base passages that were retrieved for it (Dify attaches these to every message when the app has retrieval enabled), or does it go beyond/contradict them? A deliberate decline/redirect on an out-of-scope message counts as grounded too, since it isn't making a factual claim that needs support.
+- **Relevant** - is the answer the *appropriate* response to what the user was asking or trying to accomplish - which can be a redirect or brief acknowledgment when that's the right call, not only a literal on-topic answer.
+- **Correct** - overall accuracy and appropriateness, combining groundedness and relevance.
+- **Reusable** - is this a generalizable piece of knowledge worth turning into permanent support material, or a one-off case tied to specific names/order IDs/dates (or just a greeting/redirect, which is never reusable)?
+
+The base criteria are domain-agnostic. If your app has its own scope-limiting policy (e.g. "always redirect off-topic questions"), describe it in the **Custom Instruction** setting so the eval judges against your app's actual intended behavior instead of guessing.
 
 Real user feedback (like/dislike), where already recorded on a message, is passed to the eval model as an additional signal and included in the report.
 
@@ -38,6 +41,9 @@ Real user feedback (like/dislike), where already recorded on a message, is passe
 | Lookback Window (days) | No | How many days back to pull conversations from. Default: `1`. |
 | Max Messages Per Run | No | Safety cap on how many messages to evaluate in one run. Default: `50`. |
 | Custom Instruction | No | Describe this app's expected behavior so the eval judges it correctly - e.g. "This agent should always redirect off-topic questions rather than answering them - don't penalize that as a failure." The base eval criteria (groundedness, relevance, correctness, reusability) are domain-agnostic; this fills in what "correct" actually means for your specific app. |
+| Save Report to Knowledge Base | No | When on, each run's report is saved as a new Document in a Dify Knowledge Base, giving you a persistent, searchable history. Default: off. |
+| Knowledge Base ID | Required if saving | The dataset ID to write each run's report into. |
+| Knowledge Base API Key | Required if saving | The Knowledge Base's own Service API key (Knowledge Base → API Access) - Dataset endpoints use a separate key from the App API Key above. |
 
 ### Install
 
@@ -75,7 +81,7 @@ A successful run returns:
       "conversation_id": "...",
       "message_id": "...",
       "created_at": 1735689600,
-      "question": "...",
+      "message": "...",
       "answer": "...",
       "feedback": "dislike",
       "retrieved_passage_count": 2,
@@ -88,11 +94,34 @@ A successful run returns:
       }
     }
   ],
-  "errors": []
+  "errors": [],
+  "summary_markdown": "## Eval Loop Report\n\n- **Evaluated:** 12 message(s)\n- **Correct:** 10/12 (83%)\n..."
 }
 ```
 
+`message` is deliberately not called `question` - it's whatever the user typed (Dify's own field is called `query`), which is often a greeting, an acknowledgment, or small talk rather than a literal question.
+
 `errors` lists any per-user or per-conversation failures (e.g. an invalid end-user identifier) that didn't stop the rest of the run.
+
+`summary_markdown` is a ready-to-display Markdown report - counts plus a table of flagged (incorrect) messages with their issues - meant to be shown directly rather than parsed. See below for where to actually see it.
+
+### Viewing results in Dify
+
+This plugin doesn't keep its own run history by default - each run's report only exists in the `/run` response, unless something stores or displays it. Two ways to see results inside Dify:
+
+**Option A - via a Workflow's own Logs (no extra setup)**
+
+1. Build a Dify **Workflow** app with a native **Schedule Trigger** node (see [Triggering a run](#triggering-a-run)).
+2. Add an **HTTP Request** node that calls this plugin's `/run` endpoint.
+3. Add an **End** node whose output is the HTTP Request node's `summary_markdown` field.
+
+Every scheduled run then shows up in that Workflow app's own **Logs** tab in Dify Studio, with the readable summary as the run's output. If you need the full structured `results` array (e.g. to feed a later automation step), reference that field from the same HTTP Request node's response instead.
+
+**Option B - persistent history via a Knowledge Base**
+
+Turn on **Save Report to Knowledge Base** (with a **Knowledge Base ID** and its own **API Key**) and every run writes its `summary_markdown` as a new Document into that dataset automatically - no Workflow needed. This gives you an actual searchable history across runs (visible in that Knowledge Base's Documents list in Dify Studio), and since it's a real Dify dataset, another app can even use it as RAG context - e.g. an admin-facing "ask about this app's quality trends" chatbot.
+
+Both options can be used together.
 
 ### Support
 

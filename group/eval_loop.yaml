@@ -60,5 +60,25 @@ settings:
       en_US: Custom Instruction
     placeholder:
       en_US: "Optional: describe this app's expected behavior so the eval judges it correctly, e.g. \"This agent should always redirect off-topic questions rather than answering them - don't penalize that as a failure.\""
+  - name: save_to_dataset
+    type: boolean
+    required: false
+    label:
+      en_US: Save Report to Knowledge Base
+    default: false
+  - name: dataset_id
+    type: text-input
+    required: false
+    label:
+      en_US: Knowledge Base ID
+    placeholder:
+      en_US: "Required if 'Save Report to Knowledge Base' is on. The dataset ID to write each run's report into, as a new Document."
+  - name: dataset_api_key
+    type: secret-input
+    required: false
+    label:
+      en_US: Knowledge Base API Key
+    placeholder:
+      en_US: "Required if 'Save Report to Knowledge Base' is on. Datasets use their own API key (Knowledge Base > API Access), separate from the App API Key above."
 endpoints:
   - endpoints/run.yaml
