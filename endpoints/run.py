@@ -70,11 +70,25 @@ class DifyApiClient:
             raise DifyApiError(f"{path} -> {resp.status_code}: {resp.text[:300]}")
         return resp.json()
 
+    # Hard cap on pages scanned per conversations/messages listing, so a very
+    # long history can't cause unbounded API calls when most of it predates
+    # the cutoff (see the sort-order note below).
+    _MAX_SCAN_PAGES = 50
+
     def iter_conversations(self, user: str, cutoff_ts: float):
-        """Yields conversations for `user`, newest first, stopping once older
-        than `cutoff_ts`."""
+        """Yields conversations for `user` created at or after `cutoff_ts`.
+
+        Dify sorts conversations by `updated_at` descending by default, not
+        `created_at` - an old conversation that just got a new reply sorts
+        near the top despite an old created_at. Stopping at the first
+        created_at-older-than-cutoff item (as an earlier version of this did)
+        would then silently skip every conversation after it, including
+        genuinely recent ones that simply hadn't been touched as recently.
+        So this skips old items instead of stopping, and only ends once the
+        API reports no more pages or the scan cap is hit.
+        """
         last_id = None
-        while True:
+        for _ in range(self._MAX_SCAN_PAGES):
             params: Dict[str, Any] = {"user": user, "limit": 100}
             if last_id:
                 params["last_id"] = last_id
@@ -83,18 +97,19 @@ class DifyApiClient:
             if not data:
                 return
             for conv in data:
-                if (conv.get("created_at") or 0) < cutoff_ts:
-                    return
-                yield conv
+                if (conv.get("created_at") or 0) >= cutoff_ts:
+                    yield conv
             if not page.get("has_more"):
                 return
             last_id = data[-1]["id"]
 
     def iter_messages(self, conversation_id: str, user: str, cutoff_ts: float):
-        """Yields messages for a conversation, newest first, stopping once
-        older than `cutoff_ts`."""
+        """Yields messages for a conversation created at or after `cutoff_ts`.
+        Messages have no separate updated_at, so this is mainly for symmetry
+        and defense in depth - see iter_conversations for why "skip, don't
+        stop" matters."""
         first_id = None
-        while True:
+        for _ in range(self._MAX_SCAN_PAGES):
             params: Dict[str, Any] = {"conversation_id": conversation_id, "user": user, "limit": 100}
             if first_id:
                 params["first_id"] = first_id
@@ -103,9 +118,8 @@ class DifyApiClient:
             if not data:
                 return
             for msg in data:
-                if (msg.get("created_at") or 0) < cutoff_ts:
-                    return
-                yield msg
+                if (msg.get("created_at") or 0) >= cutoff_ts:
+                    yield msg
             if not page.get("has_more"):
                 return
             first_id = data[0]["id"]
@@ -148,50 +162,19 @@ class RunEndpoint(Endpoint):
         for user in target_users:
             if len(results) >= max_messages:
                 break
+
             try:
-                conversations = list(client.iter_conversations(user, cutoff_ts))
+                conv_iter = iter(client.iter_conversations(user, cutoff_ts))
+                while len(results) < max_messages:
+                    conv = next(conv_iter)
+                    self._collect_from_conversation(
+                        client, conv, user, cutoff_ts, max_messages, eval_model, results, errors
+                    )
+            except StopIteration:
+                pass
             except DifyApiError as e:
                 errors.append(f"[{user}] failed to list conversations: {e}")
                 continue
-
-            for conv in conversations:
-                if len(results) >= max_messages:
-                    break
-                try:
-                    messages = client.iter_messages(conv["id"], user, cutoff_ts)
-                except DifyApiError as e:
-                    errors.append(f"[{user}] failed to list messages for conversation {conv['id']}: {e}")
-                    continue
-
-                for msg in messages:
-                    if len(results) >= max_messages:
-                        break
-                    question = (msg.get("query") or "").strip()
-                    answer = (msg.get("answer") or "").strip()
-                    if not question or not answer:
-                        continue
-
-                    feedback = (msg.get("feedback") or {}).get("rating")
-                    passages = [
-                        res.get("content")
-                        for res in (msg.get("retriever_resources") or [])
-                        if res.get("content")
-                    ]
-                    verdict = self._evaluate(eval_model, question, answer, feedback, passages)
-
-                    results.append(
-                        {
-                            "user": user,
-                            "conversation_id": conv["id"],
-                            "message_id": msg["id"],
-                            "created_at": msg.get("created_at"),
-                            "question": question,
-                            "answer": answer,
-                            "feedback": feedback,
-                            "retrieved_passage_count": len(passages),
-                            "eval": verdict,
-                        }
-                    )
 
         return Response(
             status=200,
@@ -208,6 +191,54 @@ class RunEndpoint(Endpoint):
             ),
             content_type="application/json",
         )
+
+    def _collect_from_conversation(
+        self,
+        client: "DifyApiClient",
+        conv: Dict[str, Any],
+        user: str,
+        cutoff_ts: float,
+        max_messages: int,
+        eval_model: Mapping,
+        results: List[Dict[str, Any]],
+        errors: List[str],
+    ) -> None:
+        """Evaluates messages from one conversation into `results`, appending
+        to `errors` instead of raising if the messages listing itself fails -
+        `iter_messages` is a generator, so the failure can only surface once
+        this loop actually pulls from it, not at the call site."""
+        try:
+            for msg in client.iter_messages(conv["id"], user, cutoff_ts):
+                if len(results) >= max_messages:
+                    return
+                question = (msg.get("query") or "").strip()
+                answer = (msg.get("answer") or "").strip()
+                if not question or not answer:
+                    continue
+
+                feedback = (msg.get("feedback") or {}).get("rating")
+                passages = [
+                    res.get("content")
+                    for res in (msg.get("retriever_resources") or [])
+                    if res.get("content")
+                ]
+                verdict = self._evaluate(eval_model, question, answer, feedback, passages)
+
+                results.append(
+                    {
+                        "user": user,
+                        "conversation_id": conv["id"],
+                        "message_id": msg["id"],
+                        "created_at": msg.get("created_at"),
+                        "question": question,
+                        "answer": answer,
+                        "feedback": feedback,
+                        "retrieved_passage_count": len(passages),
+                        "eval": verdict,
+                    }
+                )
+        except DifyApiError as e:
+            errors.append(f"[{user}] failed to list messages for conversation {conv['id']}: {e}")
 
     def _evaluate(
         self,
