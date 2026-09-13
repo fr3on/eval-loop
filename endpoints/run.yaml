@@ -1,5 +1,0 @@
-path: "/run"
-method: "POST"
-extra:
-  python:
-    source: "endpoints/run.py"

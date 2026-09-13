@@ -1,9 +1,11 @@
 ## Eval Loop
 
-**Version:** 0.0.1
-**Type:** extension
+**Version:** 0.1.0
+**Type:** tool
 
 Pulls a Dify chat app's real conversation logs and evaluates the Q&A for groundedness, relevance, correctness, and reusability - using the actual knowledge-base passages Dify already retrieved for each answer, plus any user feedback already recorded. Returns a structured report; it does not create annotations or modify anything.
+
+As a Tool-type plugin, it drops directly into a Dify Workflow's canvas - including right after a native **Schedule Trigger** node, so you can run it on a cron schedule with no external infrastructure and no HTTP Request node.
 
 ### Contents
 
@@ -31,19 +33,27 @@ Real user feedback (like/dislike), where already recorded on a message, is passe
 
 ### Settings
 
+Set once, when you add Eval Loop's credentials to your workspace (**Tools → Eval Loop → Authorize**):
+
 | Setting | Required | Description |
 | --- | --- | --- |
 | App | Yes | The Dify chat app whose logs you want to evaluate. |
 | Dify API Base URL | Yes | The base URL of the Dify instance hosting that app, e.g. `https://api.dify.ai/v1` or your self-hosted instance's `/v1` URL. |
 | App API Key | Yes | The selected app's own Service API key. Used to call that app's `/conversations` and `/messages` endpoints directly - the plugin SDK's built-in invocation doesn't expose log access, only chat/completion/workflow calls. |
-| Target End Users | Yes | Comma-separated Dify end-user identifiers to pull conversations for, e.g. `user-123,user-456`. Dify's API scopes conversation listing per end user, so there's no way to list "everyone" - you tell it who to check. |
 | Eval Model | Yes | The model used to judge each Q&A pair. |
-| Lookback Window (days) | No | How many days back to pull conversations from. Default: `1`. |
-| Max Messages Per Run | No | Safety cap on how many messages to evaluate in one run. Default: `50`. |
-| Custom Instruction | No | Describe this app's expected behavior so the eval judges it correctly - e.g. "This agent should always redirect off-topic questions rather than answering them - don't penalize that as a failure." The base eval criteria (groundedness, relevance, correctness, reusability) are domain-agnostic; this fills in what "correct" actually means for your specific app. |
 | Save Report to Knowledge Base | No | When on, each run's report is saved as a new Document in a Dify Knowledge Base, giving you a persistent, searchable history. Default: off. |
 | Knowledge Base ID | Required if saving | The dataset ID to write each run's report into. |
 | Knowledge Base API Key | Required if saving | The Knowledge Base's own Service API key (Knowledge Base → API Access) - Dataset endpoints use a separate key from the App API Key above. |
+
+Set per run, on the **Run Eval** tool node itself (so the same authorized tool can be reused across workflows with different targets):
+
+| Parameter | Required | Description |
+| --- | --- | --- |
+| Target End Users | Yes | Comma-separated Dify end-user identifiers to pull conversations for, e.g. `user-123,user-456`. Dify's API scopes conversation listing per end user, so there's no way to list "everyone" - you tell it who to check. |
+| Lookback Window (days) | No | How many days back to pull conversations from. Default: `1`. |
+| Max Messages Per Run | No | Safety cap on how many messages to evaluate in one run. Default: `50`. |
+| Eval Batch Size | No | How many message/answer pairs to judge per eval model call. Default: `5`. Larger batches cost fewer calls but risk less reliable JSON parsing. |
+| Custom Instruction | No | Describe this app's expected behavior so the eval judges it correctly - e.g. "This agent should always redirect off-topic questions rather than answering them - don't penalize that as a failure." The base eval criteria (groundedness, relevance, correctness, reusability) are domain-agnostic; this fills in what "correct" actually means for your specific app. |
 
 ### Install
 
@@ -55,16 +65,16 @@ https://github.com/fr3on/eval-loop
 
 1. In the Dify app you want to evaluate, go to **API Access** and generate (or copy) a Service API key.
 2. Note the app's `user` identifiers - whatever string is passed as `user` when the app is invoked (via the chat API, a workflow, or any client integration). If nothing sets this explicitly, every conversation falls back to one shared default user, and you can pass that instead.
-3. Install this plugin, select the target app, and fill in the base URL, API key, and target end users.
-4. Pick an Eval Model - any LLM configured in your workspace.
+3. Install this plugin. In a Workflow's Tools panel (or **Tools → Eval Loop**), authorize it: select the target app, and fill in the base URL, API key, and Eval Model.
+4. Drop a **Run Eval** node onto your workflow canvas and fill in the per-run parameters (target end users, lookback window, etc.).
 
 ### Triggering a run
 
-This plugin exposes a single `POST /run` endpoint reachable at its installed webhook URL - it does not run on a schedule by itself, since the Dify plugin platform has no built-in cron trigger for Endpoint-type plugins. Trigger it however fits your setup, e.g.:
+Eval Loop is a Tool-type plugin, so it appears directly in a Workflow's **Tools** panel - drag it onto the canvas like any other tool node, no webhook URL or HTTP Request node needed. Trigger it however fits your setup, e.g.:
 
-- Manually, with `curl` or Postman, whenever you want a report.
-- From a Dify Workflow app with a native **Schedule Trigger** node, using an HTTP Request node to call this endpoint on a cron schedule - this keeps everything inside Dify with no external infrastructure.
-- From any external scheduler (cron, GitHub Actions, a cloud scheduler) that can make an HTTP POST.
+- **On a schedule** - add a native **Schedule Trigger** node as your workflow's start, then chain a **Run Eval** tool node after it. This is the primary intended setup: fully automatic, entirely inside Dify.
+- **Manually** - run the Workflow app by hand from Dify Studio whenever you want a report.
+- **As an agent tool** - add it to an Agent app's tool list so an agent can trigger an eval run on request.
 
 ### Report format
 
@@ -107,15 +117,14 @@ A successful run returns:
 
 ### Viewing results in Dify
 
-This plugin doesn't keep its own run history by default - each run's report only exists in the `/run` response, unless something stores or displays it. Two ways to see results inside Dify:
+This plugin doesn't keep its own run history by default - each run's report only exists in that run's node output, unless something stores or displays it. Two ways to see results inside Dify:
 
 **Option A - via a Workflow's own Logs (no extra setup)**
 
-1. Build a Dify **Workflow** app with a native **Schedule Trigger** node (see [Triggering a run](#triggering-a-run)).
-2. Add an **HTTP Request** node that calls this plugin's `/run` endpoint.
-3. Add an **End** node whose output is the HTTP Request node's `summary_markdown` field.
+1. Build a Dify **Workflow** app with a native **Schedule Trigger** node, followed by a **Run Eval** tool node (see [Triggering a run](#triggering-a-run)).
+2. Add an **End** node whose output is the Run Eval node's `summary_markdown` output variable.
 
-Every scheduled run then shows up in that Workflow app's own **Logs** tab in Dify Studio, with the readable summary as the run's output. If you need the full structured `results` array (e.g. to feed a later automation step), reference that field from the same HTTP Request node's response instead.
+Every scheduled run then shows up in that Workflow app's own **Logs** tab in Dify Studio, with the readable summary as the run's output. The node also exposes `evaluated`, `dpo_pairs`, and `errors` as separate output variables, and the full raw report as its JSON output, if you need to feed a later automation step (e.g. an IF/ELSE branch on `dpo_pairs` count, or a Knowledge Base write).
 
 **Option B - persistent history via a Knowledge Base**
 

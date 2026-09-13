@@ -1,4 +1,4 @@
-"""Eval Loop endpoint.
+"""Run Eval tool.
 
 Pulls a linked Dify app's real conversation logs - message/answer pairs,
 any user feedback already attached to each message, and the actual
@@ -15,34 +15,37 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, Generator, List, Mapping, Optional
 
 import requests
-from dify_plugin import Endpoint
+from dify_plugin import Tool
 from dify_plugin.entities.model.message import SystemPromptMessage, UserPromptMessage
-from werkzeug import Request, Response
+from dify_plugin.entities.tool import ToolInvokeMessage
 
 logger = logging.getLogger(__name__)
 
 BASE_EVAL_INSTRUCTION = """You are auditing real support-agent conversation logs for quality.
 
-You may be given the actual knowledge-base passages that were retrieved and available when the answer was generated. If passages are provided, ground your judgment in them - this is the real source of truth, not general knowledge. If no passages are provided, judge plausibility and internal coherence instead.
+You may be given the actual knowledge-base passages that were retrieved and available when each answer was generated. If passages are provided for a pair, ground your judgment in them - this is the real source of truth, not general knowledge. If no passages are provided, judge plausibility and internal coherence instead.
 
 Not every message needs a substantive, KB-grounded answer. A greeting, an off-topic request, or anything outside what this agent is meant to handle may correctly receive a brief acknowledgment, decline, or redirect instead - judge such a response on whether it's the *appropriate* reply to that message, not on whether it happens to cite a knowledge-base passage. A deliberate redirect isn't a factual claim, so don't mark it ungrounded just because no passage discusses the off-topic subject. Only genuine in-scope questions need to be checked for substantive, grounded correctness.
 
-For the given message/answer pair, judge:
+For each message/answer pair, judge:
 - "grounded": for a genuine in-scope question, whether the answer is actually supported by the retrieved passages, with no claims that go beyond or contradict them. For a greeting/off-topic/out-of-scope message where a brief decline or redirect is the appropriate reply, a correct redirect counts as grounded.
 - "relevant": whether the answer is the *appropriate* response to what the user was asking or trying to accomplish - which can be a redirect or brief acknowledgment when that's the right call, not only a literal on-topic answer.
 - "correct": your overall judgment of accuracy and appropriateness, combining groundedness and relevance.
 - "reusable": whether this Q&A is generalizable knowledge that would help a different user asking something similar - not a one-off case tied to specific names, order IDs, or dates, and not a greeting/small-talk/redirect exchange.
 - "issue": a short note describing what's wrong (empty string if nothing is wrong).
+- "corrected_answer": ONLY when "correct" is false, write what the answer should have said instead - grounded in the retrieved passages if provided, otherwise your best correction. Leave as an empty string when "correct" is true. Write it as a complete, standalone answer, not a diff or a note about what was wrong.
 
-If real user feedback is provided and it's negative ("dislike"), treat that as a strong signal the answer may be wrong, and explain what likely went wrong.
+If real user feedback is provided for a pair and it's negative ("dislike"), treat that as a strong signal the answer may be wrong, and explain what likely went wrong.
 """
 
 RESPONSE_FORMAT_INSTRUCTION = """
-Respond with ONLY a raw JSON object, no markdown fences, no commentary:
-{"grounded": true or false, "relevant": true or false, "correct": true or false, "reusable": true or false, "issue": "..."}
+You will be given a numbered list of message/answer pairs to judge in this single request.
+
+Respond with ONLY a raw JSON array, no markdown fences, no commentary, with exactly one object per pair, IN THE SAME ORDER as given:
+[{"grounded": true or false, "relevant": true or false, "correct": true or false, "reusable": true or false, "issue": "...", "corrected_answer": "..."}, ...]
 """
 
 
@@ -63,7 +66,7 @@ class DifyApiError(Exception):
 
 
 class DifyApiClient:
-    """Thin client for the subset of Dify's Service API this endpoint needs.
+    """Thin client for the subset of Dify's Service API this tool needs.
 
     Deliberately not using the plugin SDK's backward-invocation here: it only
     exposes chat/completion/workflow/fetch_app, none of which cover pulling
@@ -136,13 +139,15 @@ class DifyApiClient:
             first_id = data[0]["id"]
 
 
-class RunEndpoint(Endpoint):
-    def _invoke(self, r: Request, values: Mapping, settings: Mapping) -> Response:
-        app_id = settings.get("app", {}).get("app_id")
-        base_url = settings.get("dify_base_url", "").rstrip("/")
-        api_key = settings.get("dify_api_key")
-        eval_model = settings.get("eval_model")
-        target_users_raw = settings.get("target_users", "")
+class RunEvalTool(Tool):
+    def _invoke(self, tool_parameters: Mapping[str, Any]) -> Generator[ToolInvokeMessage, None, None]:
+        credentials = self.runtime.credentials
+
+        app_id = (credentials.get("app") or {}).get("app_id")
+        base_url = (credentials.get("dify_base_url") or "").rstrip("/")
+        api_key = credentials.get("dify_api_key")
+        eval_model = credentials.get("eval_model")
+        target_users_raw = tool_parameters.get("target_users", "")
 
         missing = [
             name
@@ -156,50 +161,78 @@ class RunEndpoint(Endpoint):
             if not value
         ]
         if missing:
-            return self._error(400, f"Missing required settings: {', '.join(missing)}")
+            yield self.create_text_message(f"Missing required settings: {', '.join(missing)}")
+            return
 
         target_users = [u.strip() for u in target_users_raw.split(",") if u.strip()]
         if not target_users:
-            return self._error(400, "'target_users' must list at least one Dify end-user identifier (comma-separated).")
+            yield self.create_text_message(
+                "'Target End Users' must list at least one Dify end-user identifier (comma-separated)."
+            )
+            return
 
-        lookback_days = self._parse_int(settings.get("lookback_days"), default=1)
-        max_messages = self._parse_int(settings.get("max_messages"), default=50)
+        lookback_days = self._parse_int(tool_parameters.get("lookback_days"), default=1)
+        max_messages = self._parse_int(tool_parameters.get("max_messages"), default=50)
+        eval_batch_size = max(1, self._parse_int(tool_parameters.get("eval_batch_size"), default=5))
         cutoff_ts = time.time() - lookback_days * 86400
-        instruction = build_eval_instruction(settings.get("custom_instruction"))
+        instruction = build_eval_instruction(tool_parameters.get("custom_instruction"))
 
         client = DifyApiClient(base_url, api_key)
-        results: List[Dict[str, Any]] = []
+        candidates: List[Dict[str, Any]] = []
         errors: List[str] = []
 
+        # Phase 1: pull message/answer candidates from Dify's logs, without
+        # evaluating them yet.
         for user in target_users:
-            if len(results) >= max_messages:
+            if len(candidates) >= max_messages:
                 break
 
             try:
                 conv_iter = iter(client.iter_conversations(user, cutoff_ts))
-                while len(results) < max_messages:
+                while len(candidates) < max_messages:
                     conv = next(conv_iter)
-                    self._collect_from_conversation(
-                        client, conv, user, cutoff_ts, max_messages, eval_model, instruction, results, errors
-                    )
+                    self._collect_from_conversation(client, conv, user, cutoff_ts, max_messages, candidates, errors)
             except StopIteration:
                 pass
             except DifyApiError as e:
                 errors.append(f"[{user}] failed to list conversations: {e}")
                 continue
 
+        # Phase 2: evaluate the candidates in batches, so a single eval model
+        # call judges several pairs at once instead of one call per message.
+        results: List[Dict[str, Any]] = []
+        for i in range(0, len(candidates), eval_batch_size):
+            batch = candidates[i : i + eval_batch_size]
+            verdicts = self._evaluate_batch(eval_model, instruction, batch)
+            for item, verdict in zip(batch, verdicts):
+                entry = {k: v for k, v in item.items() if k != "passages"}
+                entry["eval"] = verdict
+                results.append(entry)
+
+        # Phase 3: derive DPO-style preference pairs from flagged answers -
+        # (prompt, chosen, rejected) triples ready for preference-based
+        # fine-tuning (e.g. HuggingFace TRL's DPOTrainer format). "chosen" is
+        # the eval model's corrected_answer, grounded in the same retrieved
+        # passages it judged against; "rejected" is the actual flagged answer.
+        dpo_pairs = [
+            {"prompt": r["message"], "chosen": r["eval"]["corrected_answer"], "rejected": r["answer"]}
+            for r in results
+            if r["eval"].get("correct") is False and r["eval"].get("corrected_answer")
+        ]
+
         report: Dict[str, Any] = {
             "app_id": app_id,
             "lookback_days": lookback_days,
             "evaluated": len(results),
             "results": results,
+            "dpo_pairs": dpo_pairs,
             "errors": errors,
-            "summary_markdown": self._build_summary_markdown(results, errors),
+            "summary_markdown": self._build_summary_markdown(results, dpo_pairs, errors),
         }
 
-        if settings.get("save_to_dataset", False):
-            dataset_id = settings.get("dataset_id")
-            dataset_api_key = settings.get("dataset_api_key")
+        if credentials.get("save_to_dataset", False):
+            dataset_id = credentials.get("dataset_id")
+            dataset_api_key = credentials.get("dataset_api_key")
             if not dataset_id or not dataset_api_key:
                 report["saved_to_dataset"] = {
                     "saved": False,
@@ -210,11 +243,12 @@ class RunEndpoint(Endpoint):
                     base_url, dataset_id, dataset_api_key, report["summary_markdown"]
                 )
 
-        return Response(
-            status=200,
-            response=json.dumps(report, indent=2, ensure_ascii=False),
-            content_type="application/json",
-        )
+        yield self.create_json_message(report)
+        yield self.create_variable_message("summary_markdown", report["summary_markdown"])
+        yield self.create_variable_message("evaluated", report["evaluated"])
+        yield self.create_variable_message("dpo_pairs", report["dpo_pairs"])
+        yield self.create_variable_message("errors", report["errors"])
+        yield self.create_text_message(report["summary_markdown"])
 
     def _save_report_to_dataset(
         self, base_url: str, dataset_id: str, dataset_api_key: str, summary_markdown: str
@@ -255,18 +289,18 @@ class RunEndpoint(Endpoint):
         user: str,
         cutoff_ts: float,
         max_messages: int,
-        eval_model: Mapping,
-        instruction: str,
-        results: List[Dict[str, Any]],
+        candidates: List[Dict[str, Any]],
         errors: List[str],
     ) -> None:
-        """Evaluates messages from one conversation into `results`, appending
-        to `errors` instead of raising if the messages listing itself fails -
-        `iter_messages` is a generator, so the failure can only surface once
-        this loop actually pulls from it, not at the call site."""
+        """Appends message/answer candidates from one conversation into
+        `candidates`, without evaluating them yet (that happens in a later,
+        batched phase). Appends to `errors` instead of raising if the
+        messages listing itself fails - `iter_messages` is a generator, so
+        the failure can only surface once this loop actually pulls from it,
+        not at the call site."""
         try:
             for msg in client.iter_messages(conv["id"], user, cutoff_ts):
-                if len(results) >= max_messages:
+                if len(candidates) >= max_messages:
                     return
                 # Dify's own field is called "query" - it's whatever the user
                 # typed, not necessarily a literal question (could be a
@@ -283,9 +317,8 @@ class RunEndpoint(Endpoint):
                     for res in (msg.get("retriever_resources") or [])
                     if res.get("content")
                 ]
-                verdict = self._evaluate(eval_model, instruction, message, answer, feedback, passages)
 
-                results.append(
+                candidates.append(
                     {
                         "user": user,
                         "conversation_id": conv["id"],
@@ -295,30 +328,41 @@ class RunEndpoint(Endpoint):
                         "answer": answer,
                         "feedback": feedback,
                         "retrieved_passage_count": len(passages),
-                        "eval": verdict,
+                        "passages": passages,
                     }
                 )
         except DifyApiError as e:
             errors.append(f"[{user}] failed to list messages for conversation {conv['id']}: {e}")
 
-    def _evaluate(
-        self,
-        model_config: Mapping,
-        instruction: str,
-        message: str,
-        answer: str,
-        feedback: Optional[str],
-        passages: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
-        user_content = f"User message: {message}\n\nAgent's answer: {answer}"
-        if passages:
-            joined = "\n\n---\n\n".join(passages)
-            user_content += f"\n\nRetrieved knowledge-base passages available when this answer was generated:\n{joined}"
-        else:
-            user_content += "\n\n(No knowledge-base passages were retrieved for this answer.)"
-        if feedback:
-            user_content += f"\n\nUser feedback on this answer: {feedback}"
+    @staticmethod
+    def _build_batch_user_content(batch: List[Dict[str, Any]]) -> str:
+        blocks = []
+        for i, item in enumerate(batch, start=1):
+            block = f"--- Pair {i} ---\nUser message: {item['message']}\n\nAgent's answer: {item['answer']}"
+            passages = item.get("passages")
+            if passages:
+                joined = "\n\n---\n\n".join(passages)
+                block += f"\n\nRetrieved knowledge-base passages available when this answer was generated:\n{joined}"
+            else:
+                block += "\n\n(No knowledge-base passages were retrieved for this answer.)"
+            feedback = item.get("feedback")
+            if feedback:
+                block += f"\n\nUser feedback on this answer: {feedback}"
+            blocks.append(block)
+        return "\n\n".join(blocks)
 
+    def _evaluate_batch(
+        self, model_config: Mapping, instruction: str, batch: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Judges an entire batch of message/answer pairs in a single LLM
+        call. On any failure - a bad response, a length mismatch, anything -
+        the whole batch falls back to per-item error verdicts, since we can't
+        reliably tell which items in a malformed response corresponded to
+        which input."""
+        if not batch:
+            return []
+
+        user_content = self._build_batch_user_content(batch)
         try:
             result = self.session.model.llm.invoke(
                 model_config=dict(model_config),
@@ -330,26 +374,41 @@ class RunEndpoint(Endpoint):
             )
             content = (result.message.content or "").strip()
             content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.MULTILINE).strip()
-            verdict = json.loads(content)
-            return {
-                "grounded": bool(verdict.get("grounded")),
-                "relevant": bool(verdict.get("relevant")),
-                "correct": bool(verdict.get("correct")),
-                "reusable": bool(verdict.get("reusable")),
-                "issue": verdict.get("issue", ""),
-            }
+            parsed = json.loads(content)
+            if not isinstance(parsed, list) or len(parsed) != len(batch):
+                got = f"{type(parsed).__name__} of length {len(parsed)}" if isinstance(parsed, list) else type(parsed).__name__
+                raise ValueError(f"expected a JSON array of {len(batch)} verdict(s), got {got}")
+            return [self._normalize_verdict(v) for v in parsed]
         except Exception as e:
-            logger.warning("Eval failed for a message: %s", e)
-            return {
-                "grounded": None,
-                "relevant": None,
-                "correct": None,
-                "reusable": None,
-                "issue": f"eval error: {e}",
-            }
+            logger.warning("Batch eval failed for %d item(s): %s", len(batch), e)
+            return [self._error_verdict(str(e)) for _ in batch]
 
     @staticmethod
-    def _build_summary_markdown(results: List[Dict[str, Any]], errors: List[str]) -> str:
+    def _normalize_verdict(verdict: Mapping) -> Dict[str, Any]:
+        return {
+            "grounded": bool(verdict.get("grounded")),
+            "relevant": bool(verdict.get("relevant")),
+            "correct": bool(verdict.get("correct")),
+            "reusable": bool(verdict.get("reusable")),
+            "issue": verdict.get("issue", ""),
+            "corrected_answer": verdict.get("corrected_answer") or "",
+        }
+
+    @staticmethod
+    def _error_verdict(error_msg: str) -> Dict[str, Any]:
+        return {
+            "grounded": None,
+            "relevant": None,
+            "correct": None,
+            "reusable": None,
+            "issue": f"eval error: {error_msg}",
+            "corrected_answer": "",
+        }
+
+    @staticmethod
+    def _build_summary_markdown(
+        results: List[Dict[str, Any]], dpo_pairs: List[Dict[str, Any]], errors: List[str]
+    ) -> str:
         """A human-readable summary, meant to be displayed directly (e.g. as
         a Dify Workflow node's output) instead of the raw JSON report."""
         total = len(results)
@@ -378,6 +437,7 @@ class RunEndpoint(Endpoint):
             f"- **Correct:** {correct}/{total} ({correct * 100 // total}%)",
             f"- **Grounded:** {grounded}/{total}",
             f"- **Reusable candidates:** {len(reusable)}",
+            f"- **DPO pairs generated:** {len(dpo_pairs)}",
             f"- **Eval errors:** {len(eval_errors)}",
             f"- **Run errors:** {len(errors)}",
         ]
@@ -400,7 +460,3 @@ class RunEndpoint(Endpoint):
             return int(value)
         except (TypeError, ValueError):
             return default
-
-    @staticmethod
-    def _error(status: int, message: str) -> Response:
-        return Response(status=status, response=json.dumps({"error": message}), content_type="application/json")

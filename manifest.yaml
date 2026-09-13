@@ -1,4 +1,4 @@
-version: 0.0.1
+version: 0.1.0
 type: plugin
 author: fr3on
 name: eval-loop
@@ -21,17 +21,16 @@ resource:
       tts: false
       speech2text: false
       moderation: false
-    endpoint:
-      enabled: true
     app:
       enabled: true
     storage:
       enabled: false
+      size: 1048576
 plugins:
-  endpoints:
-    - group/eval_loop.yaml
+  tools:
+    - provider/eval_loop.yaml
 meta:
-  version: 0.0.1
+  version: 0.1.0
   arch:
     - amd64
     - arm64

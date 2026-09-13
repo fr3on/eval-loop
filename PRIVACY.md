@@ -24,7 +24,7 @@ While running, the plugin reads:
 
 - **API key**: used only to authenticate requests to the linked Dify app's own Service API. Stored as an encrypted plugin credential by Dify; never sent anywhere else.
 - **Conversation content**: question/answer text, feedback ratings, and retrieved passages are sent to the model you configure as the "Eval Model," so it can judge groundedness, relevance, correctness, and reusability.
-- **Data Retention**: this plugin does not persist any data itself. Each run reads live logs from your Dify app and returns a report in its HTTP response; nothing is cached or stored by the plugin between runs.
+- **Data Retention**: this plugin does not persist any data itself. Each run reads live logs from your Dify app and returns a report as that run's tool output; nothing is cached or stored by the plugin between runs.
 
 ---
 

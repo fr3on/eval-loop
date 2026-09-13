@@ -1,0 +1,76 @@
+description:
+  human:
+    en_US: "Pulls the linked Dify app's conversation logs and evaluates each Q&A pair for groundedness, relevance, correctness, and reusability, returning a report and any DPO-style preference pairs for fine-tuning."
+  llm: "Evaluates a Dify app's recent conversation logs for answer quality and returns a structured report."
+extra:
+  python:
+    source: tools/run_eval.py
+identity:
+  author: fr3on
+  name: run_eval
+  label:
+    en_US: Run Eval
+parameters:
+  - name: target_users
+    type: string
+    form: form
+    required: true
+    label:
+      en_US: Target End Users
+    human_description:
+      en_US: "Comma-separated Dify end-user identifiers to pull conversations for, e.g. user-123,user-456"
+    llm_description: "Comma-separated Dify end-user identifiers to pull conversations for."
+  - name: lookback_days
+    type: number
+    form: form
+    required: false
+    default: 1
+    label:
+      en_US: Lookback Window (days)
+    human_description:
+      en_US: "How many days back to pull conversations from."
+    llm_description: "How many days back to pull conversations from."
+  - name: max_messages
+    type: number
+    form: form
+    required: false
+    default: 50
+    label:
+      en_US: Max Messages Per Run
+    human_description:
+      en_US: "Safety cap on how many messages to evaluate in one run."
+    llm_description: "Safety cap on how many messages to evaluate in one run."
+  - name: eval_batch_size
+    type: number
+    form: form
+    required: false
+    default: 5
+    label:
+      en_US: Eval Batch Size
+    human_description:
+      en_US: "How many message/answer pairs to judge per eval model call, e.g. 5. Larger batches cost fewer calls but risk less reliable JSON parsing."
+    llm_description: "How many message/answer pairs to judge per eval model call."
+  - name: custom_instruction
+    type: string
+    form: form
+    required: false
+    label:
+      en_US: Custom Instruction
+    human_description:
+      en_US: "Optional: describe this app's expected behavior so the eval judges it correctly, e.g. \"This agent should always redirect off-topic questions rather than answering them - don't penalize that as a failure.\""
+    llm_description: "Optional app-specific guidance for how to judge correctness."
+output_schema:
+  type: object
+  properties:
+    summary_markdown:
+      type: string
+    evaluated:
+      type: number
+    dpo_pairs:
+      type: array
+      items:
+        type: object
+    errors:
+      type: array
+      items:
+        type: string
