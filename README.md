@@ -42,8 +42,7 @@ Real user feedback (like/dislike), where already recorded on a message, is passe
 
 To install this plugin, specify the following GitHub repository when selecting "Install Plugin":
 
-<!-- TODO: replace with the actual GitHub repo URL before publishing -->
-`https://github.com/<your-org>/<your-repo>`
+https://github.com/fr3on/eval-loop
 
 ### Setup
 
