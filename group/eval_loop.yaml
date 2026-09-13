@@ -53,5 +53,12 @@ settings:
     placeholder:
       en_US: "Safety cap on how many messages to evaluate in one run, e.g. 50"
     default: "50"
+  - name: custom_instruction
+    type: text-input
+    required: false
+    label:
+      en_US: Custom Instruction
+    placeholder:
+      en_US: "Optional: describe this app's expected behavior so the eval judges it correctly, e.g. \"This agent should always redirect off-topic questions rather than answering them - don't penalize that as a failure.\""
 endpoints:
   - endpoints/run.yaml

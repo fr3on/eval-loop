@@ -37,6 +37,7 @@ Real user feedback (like/dislike), where already recorded on a message, is passe
 | Eval Model | Yes | The model used to judge each Q&A pair. |
 | Lookback Window (days) | No | How many days back to pull conversations from. Default: `1`. |
 | Max Messages Per Run | No | Safety cap on how many messages to evaluate in one run. Default: `50`. |
+| Custom Instruction | No | Describe this app's expected behavior so the eval judges it correctly - e.g. "This agent should always redirect off-topic questions rather than answering them - don't penalize that as a failure." The base eval criteria (groundedness, relevance, correctness, reusability) are domain-agnostic; this fills in what "correct" actually means for your specific app. |
 
 ### Install
 

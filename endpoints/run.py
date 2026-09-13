@@ -22,29 +22,38 @@ from werkzeug import Request, Response
 
 logger = logging.getLogger(__name__)
 
-EVAL_INSTRUCTION = """You are auditing real support-agent conversation logs for quality.
+BASE_EVAL_INSTRUCTION = """You are auditing real support-agent conversation logs for quality.
 
-This agent has intentional scope-limiting behavior by design, and it is CORRECT for it to behave this way - do not penalize it for doing so:
-- Greetings/small talk (e.g. "hi", "nice", "thanks") should get a brief warm reply, not a technical answer.
-- Off-topic or unrelated questions (general knowledge, other tools/products, personal chat) should be redirected back to the agent's actual scope, not answered substantively.
-- Only genuine questions about the agent's actual domain need a grounded, substantive answer.
+You may be given the actual knowledge-base passages that were retrieved and available when the answer was generated. If passages are provided, ground your judgment in them - this is the real source of truth, not general knowledge. If no passages are provided, judge plausibility and internal coherence instead.
 
-First decide which of these the question is, then judge accordingly:
-- If it's a greeting/small talk or an off-topic redirect, and the answer correctly declines/redirects rather than fabricating a substantive answer: this is CORRECT and RELEVANT behavior. Do not mark it grounded=false just because no knowledge-base passage discusses the off-topic subject - a redirect isn't a factual claim that needs grounding.
-- If it's a genuine in-scope question, judge normally:
-  - "grounded": whether the answer is actually supported by the retrieved passages (when provided), with no claims that go beyond or contradict them. If no passages were provided, judge whether the answer avoids stating specific facts/figures it couldn't have known.
-  - "relevant": whether the answer actually addresses the question asked, rather than deflecting, hedging, or giving vague non-answers.
+Not every message needs a substantive, KB-grounded answer. A greeting, an off-topic request, or anything outside what this agent is meant to handle may correctly receive a brief acknowledgment, decline, or redirect instead - judge such a response on whether it's the *appropriate* reply to that message, not on whether it happens to cite a knowledge-base passage. A deliberate redirect isn't a factual claim, so don't mark it ungrounded just because no passage discusses the off-topic subject. Only genuine in-scope questions need to be checked for substantive, grounded correctness.
 
-Then for every case, judge:
-- "correct": your overall judgment of accuracy, combining groundedness with general reasoning and consistency, per the scope rules above.
-- "reusable": whether this Q&A is generalizable support knowledge that would help a different user asking something similar - not a one-off case tied to specific names, order IDs, or dates. Greetings/small talk/redirects are never reusable.
+For the given question/answer pair, judge:
+- "grounded": for a genuine in-scope question, whether the answer is actually supported by the retrieved passages, with no claims that go beyond or contradict them. For a greeting/off-topic/out-of-scope message where a brief decline or redirect is the appropriate reply, a correct redirect counts as grounded.
+- "relevant": whether the answer is the *appropriate* response to what the user was asking or trying to accomplish - which can be a redirect or brief acknowledgment when that's the right call, not only a literal on-topic answer.
+- "correct": your overall judgment of accuracy and appropriateness, combining groundedness and relevance.
+- "reusable": whether this Q&A is generalizable knowledge that would help a different user asking something similar - not a one-off case tied to specific names, order IDs, or dates, and not a greeting/small-talk/redirect exchange.
 - "issue": a short note describing what's wrong (empty string if nothing is wrong).
 
 If real user feedback is provided and it's negative ("dislike"), treat that as a strong signal the answer may be wrong, and explain what likely went wrong.
+"""
 
+RESPONSE_FORMAT_INSTRUCTION = """
 Respond with ONLY a raw JSON object, no markdown fences, no commentary:
 {"grounded": true or false, "relevant": true or false, "correct": true or false, "reusable": true or false, "issue": "..."}
 """
+
+
+def build_eval_instruction(custom_instruction: Optional[str]) -> str:
+    """Combines the base, app-agnostic eval criteria with optional
+    operator-supplied guidance about this specific app's expected behavior
+    (e.g. "this agent should always redirect off-topic questions rather than
+    answering them - don't penalize that as a failure")."""
+    parts = [BASE_EVAL_INSTRUCTION]
+    if custom_instruction:
+        parts.append(f"Additional guidance specific to this app, from its operator:\n{custom_instruction}\n")
+    parts.append(RESPONSE_FORMAT_INSTRUCTION)
+    return "\n".join(parts)
 
 
 class DifyApiError(Exception):
@@ -154,6 +163,7 @@ class RunEndpoint(Endpoint):
         lookback_days = self._parse_int(settings.get("lookback_days"), default=1)
         max_messages = self._parse_int(settings.get("max_messages"), default=50)
         cutoff_ts = time.time() - lookback_days * 86400
+        instruction = build_eval_instruction(settings.get("custom_instruction"))
 
         client = DifyApiClient(base_url, api_key)
         results: List[Dict[str, Any]] = []
@@ -168,7 +178,7 @@ class RunEndpoint(Endpoint):
                 while len(results) < max_messages:
                     conv = next(conv_iter)
                     self._collect_from_conversation(
-                        client, conv, user, cutoff_ts, max_messages, eval_model, results, errors
+                        client, conv, user, cutoff_ts, max_messages, eval_model, instruction, results, errors
                     )
             except StopIteration:
                 pass
@@ -200,6 +210,7 @@ class RunEndpoint(Endpoint):
         cutoff_ts: float,
         max_messages: int,
         eval_model: Mapping,
+        instruction: str,
         results: List[Dict[str, Any]],
         errors: List[str],
     ) -> None:
@@ -222,7 +233,7 @@ class RunEndpoint(Endpoint):
                     for res in (msg.get("retriever_resources") or [])
                     if res.get("content")
                 ]
-                verdict = self._evaluate(eval_model, question, answer, feedback, passages)
+                verdict = self._evaluate(eval_model, instruction, question, answer, feedback, passages)
 
                 results.append(
                     {
@@ -243,6 +254,7 @@ class RunEndpoint(Endpoint):
     def _evaluate(
         self,
         model_config: Mapping,
+        instruction: str,
         question: str,
         answer: str,
         feedback: Optional[str],
@@ -261,7 +273,7 @@ class RunEndpoint(Endpoint):
             result = self.session.model.llm.invoke(
                 model_config=dict(model_config),
                 prompt_messages=[
-                    SystemPromptMessage(content=EVAL_INSTRUCTION),
+                    SystemPromptMessage(content=instruction),
                     UserPromptMessage(content=user_content),
                 ],
                 stream=False,
