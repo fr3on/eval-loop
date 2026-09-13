@@ -24,13 +24,20 @@ logger = logging.getLogger(__name__)
 
 EVAL_INSTRUCTION = """You are auditing real support-agent conversation logs for quality.
 
-You may be given the actual knowledge-base passages that were retrieved and available when the answer was generated. If passages are provided, ground your judgment in them - this is the real source of truth, not general knowledge. If no passages are provided, fall back to judging plausibility and internal coherence.
+This agent has intentional scope-limiting behavior by design, and it is CORRECT for it to behave this way - do not penalize it for doing so:
+- Greetings/small talk (e.g. "hi", "nice", "thanks") should get a brief warm reply, not a technical answer.
+- Off-topic or unrelated questions (general knowledge, other tools/products, personal chat) should be redirected back to the agent's actual scope, not answered substantively.
+- Only genuine questions about the agent's actual domain need a grounded, substantive answer.
 
-For the given question/answer pair, judge:
-- "grounded": whether the answer is actually supported by the retrieved passages (when provided), with no claims that go beyond or contradict them. If no passages were provided, judge whether the answer avoids stating specific facts/figures it couldn't have known.
-- "relevant": whether the answer actually addresses the question asked, rather than deflecting, hedging, or giving vague non-answers.
-- "correct": your overall judgment of accuracy, combining groundedness with general reasoning and consistency.
-- "reusable": whether this Q&A is generalizable support knowledge that would help a different user asking something similar - not a one-off case tied to specific names, order IDs, or dates.
+First decide which of these the question is, then judge accordingly:
+- If it's a greeting/small talk or an off-topic redirect, and the answer correctly declines/redirects rather than fabricating a substantive answer: this is CORRECT and RELEVANT behavior. Do not mark it grounded=false just because no knowledge-base passage discusses the off-topic subject - a redirect isn't a factual claim that needs grounding.
+- If it's a genuine in-scope question, judge normally:
+  - "grounded": whether the answer is actually supported by the retrieved passages (when provided), with no claims that go beyond or contradict them. If no passages were provided, judge whether the answer avoids stating specific facts/figures it couldn't have known.
+  - "relevant": whether the answer actually addresses the question asked, rather than deflecting, hedging, or giving vague non-answers.
+
+Then for every case, judge:
+- "correct": your overall judgment of accuracy, combining groundedness with general reasoning and consistency, per the scope rules above.
+- "reusable": whether this Q&A is generalizable support knowledge that would help a different user asking something similar - not a one-off case tied to specific names, order IDs, or dates. Greetings/small talk/redirects are never reusable.
 - "issue": a short note describing what's wrong (empty string if nothing is wrong).
 
 If real user feedback is provided and it's negative ("dislike"), treat that as a strong signal the answer may be wrong, and explain what likely went wrong.
