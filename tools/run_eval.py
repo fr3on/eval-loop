@@ -65,6 +65,25 @@ class DifyApiError(Exception):
     pass
 
 
+def _request_json(send, path: str) -> Dict[str, Any]:
+    """Runs an HTTP call and returns its JSON body, converting network
+    failures, non-200 statuses and non-JSON bodies into DifyApiError so
+    callers only have one exception type to handle."""
+    try:
+        resp = send()
+    except requests.RequestException as e:
+        raise DifyApiError(f"{path} -> request failed: {e}") from e
+    if resp.status_code != 200:
+        raise DifyApiError(f"{path} -> {resp.status_code}: {resp.text[:300]}")
+    try:
+        body = resp.json()
+    except ValueError as e:
+        raise DifyApiError(f"{path} -> response was not JSON") from e
+    if not isinstance(body, dict):
+        raise DifyApiError(f"{path} -> unexpected response shape")
+    return body
+
+
 class DifyApiClient:
     """Thin client for the subset of Dify's Service API this tool needs.
 
@@ -79,10 +98,8 @@ class DifyApiClient:
         self.headers = {"Authorization": f"Bearer {api_key}"}
 
     def _get(self, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        resp = requests.get(f"{self.base_url}{path}", headers=self.headers, params=params, timeout=30)
-        if resp.status_code != 200:
-            raise DifyApiError(f"{path} -> {resp.status_code}: {resp.text[:300]}")
-        return resp.json()
+        return _request_json(lambda: requests.get(
+            f"{self.base_url}{path}", headers=self.headers, params=params, timeout=30), path)
 
     # Hard cap on pages scanned per conversations/messages listing, so a very
     # long history can't cause unbounded API calls when most of it predates
@@ -139,6 +156,66 @@ class DifyApiClient:
             first_id = data[0]["id"]
 
 
+class ConsoleApiClient:
+    """Client for Dify's console API, used when no target end users are given.
+
+    The Service API can only list conversations per end user, so listing
+    *all* of an app's logs (what Studio's Logs tab shows) needs the console
+    API, authenticated with an account's console access token (copied from a
+    logged-in browser session; it expires, so it must be refreshed).
+    """
+
+    _MAX_SCAN_PAGES = 200
+
+    def __init__(self, console_url: str, access_token: str, app_id: str):
+        self.base_url = console_url.rstrip("/")
+        self.app_id = app_id
+        self.http = requests.Session()
+        self.http.headers["Authorization"] = f"Bearer {access_token}"
+
+    def _get(self, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        return _request_json(lambda: self.http.get(
+            f"{self.base_url}{path}", params=params, timeout=30), path)
+
+    def get_app(self) -> Dict[str, Any]:
+        return self._get(f"/apps/{self.app_id}", {})
+
+    def iter_conversations(self, cutoff_ts: float):
+        # Server-side filter is in the account's timezone; pad by a day and let
+        # the exact created_at check below do the real filtering.
+        start = time.strftime("%Y-%m-%d %H:%M", time.localtime(cutoff_ts - 86400))
+        for page_no in range(1, self._MAX_SCAN_PAGES + 1):
+            page = self._get(
+                f"/apps/{self.app_id}/chat-conversations",
+                {"page": page_no, "limit": 100, "start": start, "sort_by": "-created_at"},
+            )
+            data = page.get("data", [])
+            if not data:
+                return
+            for conv in data:
+                if (conv.get("created_at") or 0) >= cutoff_ts:
+                    yield conv
+            if not page.get("has_more"):
+                return
+
+    def iter_messages(self, conversation_id: str, cutoff_ts: float):
+        first_id = None
+        for _ in range(self._MAX_SCAN_PAGES):
+            params: Dict[str, Any] = {"conversation_id": conversation_id, "limit": 100}
+            if first_id:
+                params["first_id"] = first_id
+            page = self._get(f"/apps/{self.app_id}/chat-messages", params)
+            data = page.get("data", [])
+            if not data:
+                return
+            for msg in data:
+                if (msg.get("created_at") or 0) >= cutoff_ts:
+                    yield msg
+            if not page.get("has_more"):
+                return
+            first_id = data[0]["id"]
+
+
 class RunEvalTool(Tool):
     def _invoke(self, tool_parameters: Mapping[str, Any]) -> Generator[ToolInvokeMessage, None, None]:
         credentials = self.runtime.credentials
@@ -147,7 +224,10 @@ class RunEvalTool(Tool):
         base_url = (credentials.get("dify_base_url") or "").rstrip("/")
         api_key = credentials.get("dify_api_key")
         eval_model = credentials.get("eval_model")
-        target_users_raw = tool_parameters.get("target_users", "")
+        target_users_raw = tool_parameters.get("target_users") or ""
+        console_token = (tool_parameters.get("console_access_token") or "").strip()
+        if console_token.lower().startswith("bearer "):
+            console_token = console_token[7:].strip()
 
         missing = [
             name
@@ -156,7 +236,6 @@ class RunEvalTool(Tool):
                 ("dify_base_url", base_url),
                 ("dify_api_key", api_key),
                 ("eval_model", eval_model),
-                ("target_users", target_users_raw),
             )
             if not value
         ]
@@ -164,15 +243,23 @@ class RunEvalTool(Tool):
             yield self.create_text_message(f"Missing required settings: {', '.join(missing)}")
             return
 
-        target_users = [u.strip() for u in target_users_raw.split(",") if u.strip()]
-        if not target_users:
+        target_users = list(dict.fromkeys(u.strip() for u in str(target_users_raw).split(",") if u.strip()))
+        all_users_mode = not target_users
+        if all_users_mode and not console_token:
             yield self.create_text_message(
-                "'Target End Users' must list at least one Dify end-user identifier (comma-separated)."
+                "'Target End Users' is empty, which loads ALL conversations via the console API - "
+                "set Console Access Token on this node, or list end users."
             )
             return
 
-        lookback_days = self._parse_int(tool_parameters.get("lookback_days"), default=1)
-        max_messages = self._parse_int(tool_parameters.get("max_messages"), default=50)
+        try:
+            lookback_days = float(tool_parameters.get("lookback_days") or 1)
+        except (TypeError, ValueError):
+            lookback_days = 1.0
+        lookback_days = max(lookback_days, 0.0)
+        if lookback_days == int(lookback_days):
+            lookback_days = int(lookback_days)
+        max_messages = max(1, self._parse_int(tool_parameters.get("max_messages"), default=50))
         eval_batch_size = max(1, self._parse_int(tool_parameters.get("eval_batch_size"), default=5))
         cutoff_ts = time.time() - lookback_days * 86400
         instruction = build_eval_instruction(tool_parameters.get("custom_instruction"))
@@ -181,22 +268,73 @@ class RunEvalTool(Tool):
         candidates: List[Dict[str, Any]] = []
         errors: List[str] = []
 
+        # Make sure the App API Key actually belongs to the app picked in the
+        # App selector, so we never silently evaluate another app's logs.
+        app_name = None
+        try:
+            selected = self.session.app.fetch_app(app_id) or {}
+            app_name = selected.get("name")
+            mode = selected.get("mode")
+            if mode and mode not in ("chat", "agent-chat", "advanced-chat"):
+                yield self.create_text_message(f"Selected app '{app_name}' is a '{mode}' app; a chat app is required.")
+                return
+            info = client._get("/info", {})
+            if app_name and info.get("name") and info["name"] != app_name:
+                yield self.create_text_message(
+                    f"App API Key belongs to '{info['name']}', but the selected app is '{app_name}'. "
+                    "Use the Service API key of the selected app."
+                )
+                return
+        except DifyApiError as e:
+            yield self.create_text_message(f"App API Key check failed: {e}")
+            return
+        except Exception as e:
+            logger.warning("Could not verify selected app: %s", e)
+
+        console: Optional[ConsoleApiClient] = None
+        if all_users_mode:
+            console_url = (tool_parameters.get("console_base_url") or "").strip() or re.sub(
+                r"/v1$", "/console/api", base_url
+            )
+            try:
+                console = ConsoleApiClient(console_url, console_token, app_id)
+                console.get_app()
+            except (DifyApiError, requests.RequestException) as e:
+                yield self.create_text_message(
+                    f"Console API access failed (the access token may have expired - copy a fresh one): {e}"
+                )
+                return
+
         # Phase 1: pull message/answer candidates from Dify's logs, without
         # evaluating them yet.
-        for user in target_users:
-            if len(candidates) >= max_messages:
-                break
-
+        if console:
             try:
-                conv_iter = iter(client.iter_conversations(user, cutoff_ts))
-                while len(candidates) < max_messages:
-                    conv = next(conv_iter)
-                    self._collect_from_conversation(client, conv, user, cutoff_ts, max_messages, candidates, errors)
-            except StopIteration:
-                pass
-            except DifyApiError as e:
-                errors.append(f"[{user}] failed to list conversations: {e}")
-                continue
+                for conv in console.iter_conversations(cutoff_ts):
+                    if len(candidates) >= max_messages:
+                        break
+                    user = conv.get("from_end_user_session_id") or conv.get("from_account_name") or "unknown"
+                    self._collect_from_conversation(
+                        console, conv, user, cutoff_ts, max_messages, candidates, errors
+                    )
+            except (DifyApiError, requests.RequestException) as e:
+                errors.append(f"failed to list conversations via console API: {e}")
+        else:
+            for user in target_users:
+                if len(candidates) >= max_messages:
+                    break
+
+                try:
+                    conv_iter = iter(client.iter_conversations(user, cutoff_ts))
+                    while len(candidates) < max_messages:
+                        conv = next(conv_iter)
+                        self._collect_from_conversation(
+                            client, conv, user, cutoff_ts, max_messages, candidates, errors
+                        )
+                except StopIteration:
+                    pass
+                except DifyApiError as e:
+                    errors.append(f"[{user}] failed to list conversations: {e}")
+                    continue
 
         # Phase 2: evaluate the candidates in batches, so a single eval model
         # call judges several pairs at once instead of one call per message.
@@ -220,17 +358,50 @@ class RunEvalTool(Tool):
             if r["eval"].get("correct") is False and r["eval"].get("corrected_answer")
         ]
 
+        # Answers a human should look at: judged incorrect, couldn't be judged
+        # (eval error), or the end user gave a thumbs-down. Feeds e.g. a Slack
+        # review step in the workflow.
+        review_items = []
+        for r in results:
+            ev = r["eval"]
+            if ev.get("correct") is False:
+                reason = "judged incorrect"
+            elif ev.get("correct") is None:
+                reason = "eval error"
+            elif r.get("feedback") == "dislike":
+                reason = "user disliked"
+            else:
+                continue
+            review_items.append(
+                {
+                    "reason": reason,
+                    "user": r["user"],
+                    "conversation_id": r["conversation_id"],
+                    "message_id": r["message_id"],
+                    "message": r["message"],
+                    "answer": r["answer"],
+                    "feedback": r.get("feedback"),
+                    "issue": ev.get("issue", ""),
+                    "corrected_answer": ev.get("corrected_answer", ""),
+                }
+            )
+
         report: Dict[str, Any] = {
             "app_id": app_id,
+            "app_name": app_name,
+            "scope": "all conversations (console API)" if all_users_mode else "listed end users",
             "lookback_days": lookback_days,
             "evaluated": len(results),
             "results": results,
             "dpo_pairs": dpo_pairs,
+            "review_items": review_items,
             "errors": errors,
             "summary_markdown": self._build_summary_markdown(results, dpo_pairs, errors),
         }
 
-        if credentials.get("save_to_dataset", False):
+        if credentials.get("save_to_dataset", False) and not results:
+            report["saved_to_dataset"] = {"saved": False, "error": "No messages evaluated; nothing to save."}
+        elif credentials.get("save_to_dataset", False):
             dataset_id = credentials.get("dataset_id")
             dataset_api_key = credentials.get("dataset_api_key")
             if not dataset_id or not dataset_api_key:
@@ -240,15 +411,25 @@ class RunEvalTool(Tool):
                 }
             else:
                 report["saved_to_dataset"] = self._save_report_to_dataset(
-                    base_url, dataset_id, dataset_api_key, report["summary_markdown"]
+                    base_url, dataset_id, dataset_api_key, self._build_kb_document(report)
                 )
 
         yield self.create_json_message(report)
         yield self.create_variable_message("summary_markdown", report["summary_markdown"])
         yield self.create_variable_message("evaluated", report["evaluated"])
         yield self.create_variable_message("dpo_pairs", report["dpo_pairs"])
+        yield self.create_variable_message("review_items", report["review_items"])
+        yield self.create_variable_message("review_count", len(report["review_items"]))
         yield self.create_variable_message("errors", report["errors"])
-        yield self.create_text_message(report["summary_markdown"])
+        saved = report.get("saved_to_dataset")
+        note = ""
+        if saved:
+            note = (
+                f"\n\n_Saved to Knowledge Base (document {saved.get('document_id')})._"
+                if saved.get("saved")
+                else f"\n\n**Knowledge Base save failed:** {saved.get('error')}"
+            )
+        yield self.create_text_message(report["summary_markdown"] + note)
 
     def _save_report_to_dataset(
         self, base_url: str, dataset_id: str, dataset_api_key: str, summary_markdown: str
@@ -266,6 +447,8 @@ class RunEvalTool(Tool):
                     "name": f"Eval Loop Report - {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
                     "text": summary_markdown,
                     "indexing_technique": "high_quality",
+                    "doc_form": "text_model",
+                    "process_rule": {"mode": "automatic"},
                 },
                 timeout=30,
             )
@@ -275,16 +458,45 @@ class RunEvalTool(Tool):
         if resp.status_code not in (200, 201):
             return {"saved": False, "error": f"{resp.status_code}: {resp.text[:300]}"}
 
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {}
         return {
             "saved": True,
             "document_id": (data.get("document") or {}).get("id"),
             "batch": data.get("batch"),
         }
 
+    # Keeps one oversized retrieved chunk from blowing up the eval prompt.
+    _MAX_PASSAGE_CHARS = 3000
+
+    @staticmethod
+    def _build_kb_document(report: Dict[str, Any]) -> str:
+        """Full-detail Markdown for the Knowledge Base: the summary plus every
+        evaluated message (not just the flagged ones), so the stored history
+        is searchable and complete."""
+        lines = [report["summary_markdown"], "", "## All evaluated messages"]
+        for r in report["results"]:
+            ev = r["eval"]
+            lines += [
+                "",
+                f"### {r['user']} - message {r['message_id']}",
+                f"- Conversation: {r['conversation_id']}",
+                f"- Correct: {ev.get('correct')} | Grounded: {ev.get('grounded')} | "
+                f"Relevant: {ev.get('relevant')} | Reusable: {ev.get('reusable')} | Feedback: {r.get('feedback')}",
+                f"- **User message:** {r['message']}",
+                f"- **Answer:** {r['answer']}",
+            ]
+            if ev.get("issue"):
+                lines.append(f"- **Issue:** {ev['issue']}")
+            if ev.get("corrected_answer"):
+                lines.append(f"- **Corrected answer:** {ev['corrected_answer']}")
+        return "\n".join(lines)
+
     def _collect_from_conversation(
         self,
-        client: "DifyApiClient",
+        client: Any,
         conv: Dict[str, Any],
         user: str,
         cutoff_ts: float,
@@ -299,7 +511,12 @@ class RunEvalTool(Tool):
         the failure can only surface once this loop actually pulls from it,
         not at the call site."""
         try:
-            for msg in client.iter_messages(conv["id"], user, cutoff_ts):
+            messages = (
+                client.iter_messages(conv["id"], cutoff_ts)
+                if isinstance(client, ConsoleApiClient)
+                else client.iter_messages(conv["id"], user, cutoff_ts)
+            )
+            for msg in messages:
                 if len(candidates) >= max_messages:
                     return
                 # Dify's own field is called "query" - it's whatever the user
@@ -311,11 +528,17 @@ class RunEvalTool(Tool):
                 if not message or not answer:
                     continue
 
+                # Service API: "feedback" dict + top-level "retriever_resources".
+                # Console API: "feedbacks" list + "metadata.retriever_resources".
                 feedback = (msg.get("feedback") or {}).get("rating")
+                if not feedback:
+                    feedbacks = msg.get("feedbacks") or []
+                    feedback = feedbacks[0].get("rating") if feedbacks else None
+                resources = msg.get("retriever_resources") or (msg.get("metadata") or {}).get(
+                    "retriever_resources"
+                ) or []
                 passages = [
-                    res.get("content")
-                    for res in (msg.get("retriever_resources") or [])
-                    if res.get("content")
+                    str(res["content"])[: self._MAX_PASSAGE_CHARS] for res in resources if res.get("content")
                 ]
 
                 candidates.append(
@@ -372,7 +595,10 @@ class RunEvalTool(Tool):
                 ],
                 stream=False,
             )
-            content = (result.message.content or "").strip()
+            raw = result.message.content
+            if isinstance(raw, list):
+                raw = "".join(getattr(part, "data", "") or "" for part in raw)
+            content = (raw or "").strip()
             content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.MULTILINE).strip()
             parsed = json.loads(content)
             if not isinstance(parsed, list) or len(parsed) != len(batch):
@@ -381,17 +607,30 @@ class RunEvalTool(Tool):
             return [self._normalize_verdict(v) for v in parsed]
         except Exception as e:
             logger.warning("Batch eval failed for %d item(s): %s", len(batch), e)
+            if len(batch) > 1:
+                # One bad item/response shouldn't sink the whole batch - retry
+                # each pair on its own.
+                return [v for item in batch for v in self._evaluate_batch(model_config, instruction, [item])]
             return [self._error_verdict(str(e)) for _ in batch]
 
     @staticmethod
     def _normalize_verdict(verdict: Mapping) -> Dict[str, Any]:
+        if not isinstance(verdict, Mapping):
+            raise ValueError(f"verdict is not an object: {type(verdict).__name__}")
+
+        def as_bool(value: Any) -> bool:
+            # Models occasionally return "false" as a string, and bool("false") is True.
+            if isinstance(value, str):
+                return value.strip().lower() in ("true", "yes", "1")
+            return bool(value)
+
         return {
-            "grounded": bool(verdict.get("grounded")),
-            "relevant": bool(verdict.get("relevant")),
-            "correct": bool(verdict.get("correct")),
-            "reusable": bool(verdict.get("reusable")),
-            "issue": verdict.get("issue", ""),
-            "corrected_answer": verdict.get("corrected_answer") or "",
+            "grounded": as_bool(verdict.get("grounded")),
+            "relevant": as_bool(verdict.get("relevant")),
+            "correct": as_bool(verdict.get("correct")),
+            "reusable": as_bool(verdict.get("reusable")),
+            "issue": str(verdict.get("issue") or ""),
+            "corrected_answer": str(verdict.get("corrected_answer") or ""),
         }
 
     @staticmethod

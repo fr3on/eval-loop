@@ -14,12 +14,30 @@ parameters:
   - name: target_users
     type: string
     form: form
-    required: true
+    required: false
     label:
       en_US: Target End Users
     human_description:
-      en_US: "Comma-separated Dify end-user identifiers to pull conversations for, e.g. user-123,user-456"
+      en_US: "Comma-separated Dify end-user identifiers to pull conversations for, e.g. user-123,user-456. Leave empty to load ALL conversations (requires Console Access Token below)."
     llm_description: "Comma-separated Dify end-user identifiers to pull conversations for."
+  - name: console_base_url
+    type: string
+    form: form
+    required: false
+    label:
+      en_US: Console API URL
+    human_description:
+      en_US: "Optional, only for loading all conversations. e.g. https://cloud.dify.ai/console/api. Defaults to the API Base URL with /v1 replaced by /console/api."
+    llm_description: "Optional console API URL."
+  - name: console_access_token
+    type: secret-input
+    form: form
+    required: false
+    label:
+      en_US: Console Access Token
+    human_description:
+      en_US: "Only needed when Target End Users is empty. A Dify console access_token (browser DevTools > Application > Local Storage > console_token, or the Authorization header of a Studio request). It expires, so refresh it when runs report an auth failure."
+    llm_description: "Console access token used to load all conversations."
   - name: lookback_days
     type: number
     form: form
@@ -70,6 +88,12 @@ output_schema:
       type: array
       items:
         type: object
+    review_items:
+      type: array
+      items:
+        type: object
+    review_count:
+      type: number
     errors:
       type: array
       items:

@@ -1,0 +1,507 @@
+app:
+  description: 'Runs Eval Loop against Support v1.1 on a daily schedule, exposes the results as this Workflow app''s own Logs, and posts answers that need human review to a Slack channel.'
+  icon: 📊
+  icon_background: '#E0F2FE'
+  mode: workflow
+  name: Eval Loop - Scheduled Run
+  use_icon_as_answer_icon: false
+dependencies: []
+kind: app
+version: 0.3.1
+workflow:
+  conversation_variables: []
+  environment_variables:
+  - description: 'Slack Incoming Webhook URL for the human-review channel (Slack > Apps > Incoming Webhooks). Leave empty only if you remove the Slack nodes.'
+    id: 5b7a6f1e-3c2d-4e8a-9f10-7d2a4c6b8e01
+    name: SLACK_WEBHOOK_URL
+    selector:
+      - env
+      - SLACK_WEBHOOK_URL
+    value: ''
+    value_type: secret
+  features:
+    file_upload:
+      enabled: false
+    opening_statement: ''
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: trigger-schedule
+        targetType: tool
+      id: trigger-to-run-eval
+      source: 'trigger_schedule_1'
+      sourceHandle: source
+      target: 'run_eval_1'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: tool
+        targetType: code
+      id: run-eval-to-slack-code
+      source: 'run_eval_1'
+      sourceHandle: source
+      target: 'slack_code_1'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: if-else
+      id: slack-code-to-if
+      source: 'slack_code_1'
+      sourceHandle: source
+      target: 'slack_if_1'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: http-request
+      id: slack-if-true-to-http
+      source: 'slack_if_1'
+      sourceHandle: "true"
+      target: 'slack_http_1'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: end
+      id: slack-http-to-end
+      source: 'slack_http_1'
+      sourceHandle: source
+      target: 'end_1'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: end
+      id: slack-if-false-to-end
+      source: 'slack_if_1'
+      sourceHandle: "false"
+      target: 'end_1'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        desc: 'Fires once a day. Edit the time/timezone, or switch to Cron mode, after import.'
+        title: Schedule Trigger
+        type: trigger-schedule
+        mode: visual
+        frequency: daily
+        cron_expression: null
+        visual_config:
+          time: '09:00 AM'
+        timezone: UTC
+      height: 90
+      id: 'trigger_schedule_1'
+      position:
+        x: 30
+        y: 227
+      positionAbsolute:
+        x: 30
+        y: 227
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        desc: 'Evaluates Support v1.1''s recent conversation logs. Requires the eval-loop plugin to be installed and its credentials (App, API key, Eval Model) authorized before this node will run.'
+        title: Run Eval
+        type: tool
+        provider_id: 'fr3on/eval-loop/eval_loop'
+        provider_name: 'fr3on/eval-loop/eval_loop'
+        provider_type: builtin
+        tool_name: 'run_eval'
+        tool_label: 'Run Eval'
+        tool_description: "Evaluates a Dify app's recent conversation logs for answer quality and returns a structured report."
+        tool_node_version: '2'
+        is_team_authorization: true
+        output_schema: null
+        paramSchemas:
+        - name: target_users
+          type: string
+          form: form
+          required: false
+          default: null
+          min: null
+          max: null
+          precision: null
+          options: []
+          placeholder: null
+          template: null
+          scope: null
+          auto_generate: null
+          label:
+            en_US: Target End Users
+          human_description:
+            en_US: "Comma-separated Dify end-user identifiers to pull conversations for, e.g. user-123,user-456. Leave empty to load ALL conversations (requires Console Access Token below)."
+          llm_description: "Comma-separated Dify end-user identifiers to pull conversations for."
+        - name: console_base_url
+          type: string
+          form: form
+          required: false
+          default: null
+          min: null
+          max: null
+          precision: null
+          options: []
+          placeholder: null
+          template: null
+          scope: null
+          auto_generate: null
+          label:
+            en_US: Console API URL
+          human_description:
+            en_US: "Optional, only for loading all conversations. e.g. https://cloud.dify.ai/console/api. Defaults to the API Base URL with /v1 replaced by /console/api."
+          llm_description: "Optional console API URL."
+        - name: console_access_token
+          type: secret-input
+          form: form
+          required: false
+          default: null
+          min: null
+          max: null
+          precision: null
+          options: []
+          placeholder: null
+          template: null
+          scope: null
+          auto_generate: null
+          label:
+            en_US: Console Access Token
+          human_description:
+            en_US: "Only needed when Target End Users is empty. A Dify console access_token (browser DevTools > Application > Local Storage > console_token, or the Authorization header of a Studio request). It expires, so refresh it when runs report an auth failure."
+          llm_description: "Console access token used to load all conversations."
+        - name: lookback_days
+          type: number
+          form: form
+          required: false
+          default: 1
+          min: null
+          max: null
+          precision: null
+          options: []
+          placeholder: null
+          template: null
+          scope: null
+          auto_generate: null
+          label:
+            en_US: Lookback Window (days)
+          human_description:
+            en_US: "How many days back to pull conversations from."
+          llm_description: "How many days back to pull conversations from."
+        - name: max_messages
+          type: number
+          form: form
+          required: false
+          default: 50
+          min: null
+          max: null
+          precision: null
+          options: []
+          placeholder: null
+          template: null
+          scope: null
+          auto_generate: null
+          label:
+            en_US: Max Messages Per Run
+          human_description:
+            en_US: "Safety cap on how many messages to evaluate in one run."
+          llm_description: "Safety cap on how many messages to evaluate in one run."
+        - name: eval_batch_size
+          type: number
+          form: form
+          required: false
+          default: 5
+          min: null
+          max: null
+          precision: null
+          options: []
+          placeholder: null
+          template: null
+          scope: null
+          auto_generate: null
+          label:
+            en_US: Eval Batch Size
+          human_description:
+            en_US: "How many message/answer pairs to judge per eval model call, e.g. 5. Larger batches cost fewer calls but risk less reliable JSON parsing."
+          llm_description: "How many message/answer pairs to judge per eval model call."
+        - name: custom_instruction
+          type: string
+          form: form
+          required: false
+          default: null
+          min: null
+          max: null
+          precision: null
+          options: []
+          placeholder: null
+          template: null
+          scope: null
+          auto_generate: null
+          label:
+            en_US: Custom Instruction
+          human_description:
+            en_US: "Optional: describe this app's expected behavior so the eval judges it correctly."
+          llm_description: "Optional app-specific guidance for how to judge correctness."
+        tool_configurations:
+          target_users:
+            type: constant
+            value: 'DEFAULT-USER'
+          console_base_url:
+            type: constant
+            value: ''
+          console_access_token:
+            type: constant
+            value: ''
+          lookback_days:
+            type: constant
+            value: 7
+          max_messages:
+            type: constant
+            value: 20
+          eval_batch_size:
+            type: constant
+            value: 5
+          custom_instruction:
+            type: constant
+            value: ''
+        tool_parameters: {}
+        params:
+          target_users: ''
+          console_base_url: ''
+          console_access_token: ''
+          lookback_days: ''
+          max_messages: ''
+          eval_batch_size: ''
+          custom_instruction: ''
+        selected: false
+        isInIteration: false
+        isInLoop: false
+      height: 90
+      id: 'run_eval_1'
+      position:
+        x: 334
+        y: 227
+      positionAbsolute:
+        x: 334
+        y: 227
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        code: |
+          import json
+
+          def main(review_items: list, evaluated: int) -> dict:
+              items = review_items or []
+              limit = 10
+
+              def clip(text, n=500):
+                  text = (text or "").replace("\n", " ").strip()
+                  return text if len(text) <= n else text[: n - 1] + "…"
+
+              lines = [f":mag: *Eval Loop - {len(items)} answer(s) need human review* (of {evaluated} evaluated)"]
+              for i, it in enumerate(items[:limit], start=1):
+                  lines.append("")
+                  lines.append(f"*{i}. {it.get('reason', 'review')}* - user `{it.get('user', '')}`, conversation `{it.get('conversation_id', '')}`")
+                  lines.append(f"> *Message:* {clip(it.get('message'))}")
+                  lines.append(f"> *Answer:* {clip(it.get('answer'))}")
+                  if it.get("issue"):
+                      lines.append(f"> *Issue:* {clip(it.get('issue'))}")
+                  if it.get("corrected_answer"):
+                      lines.append(f"> *Suggested answer:* {clip(it.get('corrected_answer'))}")
+                  if it.get("feedback"):
+                      lines.append(f"> *User feedback:* {it['feedback']}")
+              if len(items) > limit:
+                  lines.append("")
+                  lines.append(f"_...and {len(items) - limit} more - see this workflow's Logs or the Knowledge Base report._")
+
+              # Slack messages are capped at ~40k characters; stay well below.
+              text = "\n".join(lines)[:35000]
+              return {"payload": json.dumps({"text": text}), "review_count": len(items)}
+
+        code_language: python3
+        desc: 'Formats the flagged/disliked/errored answers from Run Eval into a Slack message (max 10 shown) and counts them.'
+        outputs:
+          payload:
+            children: null
+            type: string
+          review_count:
+            children: null
+            type: number
+        selected: false
+        title: Build Slack message
+        type: code
+        variables:
+        - value_selector:
+          - run_eval_1
+          - review_items
+          variable: review_items
+        - value_selector:
+          - run_eval_1
+          - evaluated
+          variable: evaluated
+      height: 90
+      id: 'slack_code_1'
+      position:
+        x: 638
+        y: 227
+      positionAbsolute:
+        x: 638
+        y: 227
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: '>'
+            id: review-count-gt-0
+            value: '0'
+            varType: number
+            variable_selector:
+            - slack_code_1
+            - review_count
+          id: 'true'
+          logical_operator: and
+        desc: 'Only post to Slack when something needs review.'
+        selected: false
+        title: Anything to review?
+        type: if-else
+      height: 126
+      id: 'slack_if_1'
+      position:
+        x: 942
+        y: 227
+      positionAbsolute:
+        x: 942
+        y: 227
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data:
+          - id: slack-body-1
+            key: ''
+            type: text
+            value: '{{#slack_code_1.payload#}}'
+          type: json
+        desc: 'Posts the review list to the Slack Incoming Webhook in SLACK_WEBHOOK_URL. A Slack failure fails the run visibly in Logs.'
+        headers: ''
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 3
+          retry_enabled: true
+          retry_interval: 1000
+        ssl_verify: true
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        selected: false
+        title: Post to Slack
+        type: http-request
+        url: '{{#env.SLACK_WEBHOOK_URL#}}'
+        variables: []
+      height: 90
+      id: 'slack_http_1'
+      position:
+        x: 1246
+        y: 150
+      positionAbsolute:
+        x: 1246
+        y: 150
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        desc: 'Every scheduled run shows up in this Workflow app''s own Logs tab with summary_markdown as the readable output.'
+        outputs:
+        - value_selector:
+          - 'run_eval_1'
+          - summary_markdown
+          value_type: string
+          variable: summary_markdown
+        - value_selector:
+          - 'run_eval_1'
+          - evaluated
+          value_type: number
+          variable: evaluated
+        - value_selector:
+          - 'run_eval_1'
+          - dpo_pairs
+          value_type: array[object]
+          variable: dpo_pairs
+        - value_selector:
+          - 'run_eval_1'
+          - errors
+          value_type: array[string]
+          variable: errors
+        - value_selector:
+          - slack_code_1
+          - review_count
+          value_type: number
+          variable: review_count
+        selected: false
+        title: End
+        type: end
+      height: 90
+      id: 'end_1'
+      position:
+        x: 1550
+        y: 227
+      positionAbsolute:
+        x: 1550
+        y: 227
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    viewport:
+      x: 0
+      y: 0
+      zoom: 0.85

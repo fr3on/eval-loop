@@ -1,0 +1,906 @@
+app:
+  description: 'A from-scratch clone of the eval-loop plugin''s logic, built entirely out of native Dify Workflow nodes (HTTP Request + Code + LLM + Iteration) instead of the plugin. Simplified vs. the plugin: fetches a single page (up to 100) of conversations per user and a single page of messages per conversation, instead of the plugin''s multi-page scan; fetch failures aren''t individually caught per-conversation. Everything else - batching, DPO pair generation, the summary report - mirrors the plugin, except the plugin''s newer features: loading ALL conversations via the console API (no Target End Users needed), the selected-app/API-key check, per-item retry when a batch response is malformed, passage-size capping, and the full-detail Knowledge Base document.'
+  icon: 🧪
+  icon_background: '#F3E8FF'
+  mode: workflow
+  name: Eval Loop - Native Workflow Clone
+  use_icon_as_answer_icon: false
+dependencies: []
+kind: app
+version: 0.3.1
+workflow:
+  conversation_variables: []
+  environment_variables:
+  - value_type: string
+    name: DIFY_BASE_URL
+    value: 'https://dify.amwal.tech/v1'
+  - value_type: secret
+    name: DIFY_API_KEY
+    value: ''
+  - value_type: string
+    name: TARGET_USERS
+    value: 'DEFAULT-USER'
+  - value_type: string
+    name: LOOKBACK_DAYS
+    value: '7'
+  - value_type: string
+    name: MAX_MESSAGES
+    value: '50'
+  - value_type: string
+    name: EVAL_BATCH_SIZE
+    value: '5'
+  - value_type: string
+    name: CUSTOM_INSTRUCTION
+    value: ''
+  - value_type: string
+    name: DATASET_ID
+    value: ''
+  - value_type: secret
+    name: DATASET_API_KEY
+    value: ''
+  features:
+    file_upload:
+      enabled: false
+    opening_statement: ''
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+  graph:
+    edges:
+    - data: {isInIteration: false, isInLoop: false, sourceType: trigger-schedule, targetType: code}
+      id: trigger-to-prep
+      source: trigger_schedule_1
+      sourceHandle: source
+      target: code_prep
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data: {isInIteration: false, isInLoop: false, sourceType: code, targetType: iteration}
+      id: prep-to-iter-users
+      source: code_prep
+      sourceHandle: source
+      target: iteration_users
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data: {isInIteration: true, isInLoop: false, iteration_id: iteration_users, sourceType: iteration-start, targetType: http-request}
+      id: iter-users-start-to-http-conv
+      source: iteration_usersstart
+      sourceHandle: source
+      target: http_conversations
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data: {isInIteration: true, isInLoop: false, iteration_id: iteration_users, sourceType: http-request, targetType: code}
+      id: http-conv-to-code-conv-ids
+      source: http_conversations
+      sourceHandle: source
+      target: code_conv_ids
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data: {isInIteration: false, isInLoop: false, sourceType: iteration, targetType: iteration}
+      id: iter-users-to-iter-convs
+      source: iteration_users
+      sourceHandle: source
+      target: iteration_convs
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data: {isInIteration: true, isInLoop: false, iteration_id: iteration_convs, sourceType: iteration-start, targetType: code}
+      id: iter-convs-start-to-extract
+      source: iteration_convsstart
+      sourceHandle: source
+      target: code_extract_pair
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data: {isInIteration: true, isInLoop: false, iteration_id: iteration_convs, sourceType: code, targetType: http-request}
+      id: extract-to-http-messages
+      source: code_extract_pair
+      sourceHandle: source
+      target: http_messages
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data: {isInIteration: true, isInLoop: false, iteration_id: iteration_convs, sourceType: http-request, targetType: code}
+      id: http-messages-to-candidates
+      source: http_messages
+      sourceHandle: source
+      target: code_candidates
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data: {isInIteration: false, isInLoop: false, sourceType: iteration, targetType: code}
+      id: iter-convs-to-cap
+      source: iteration_convs
+      sourceHandle: source
+      target: code_cap
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data: {isInIteration: false, isInLoop: false, sourceType: code, targetType: code}
+      id: cap-to-batches
+      source: code_cap
+      sourceHandle: source
+      target: code_batches
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data: {isInIteration: false, isInLoop: false, sourceType: code, targetType: iteration}
+      id: batches-to-iter-batches
+      source: code_batches
+      sourceHandle: source
+      target: iteration_batches
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data: {isInIteration: true, isInLoop: false, iteration_id: iteration_batches, sourceType: iteration-start, targetType: llm}
+      id: iter-batches-start-to-llm
+      source: iteration_batchesstart
+      sourceHandle: source
+      target: llm_eval
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data: {isInIteration: true, isInLoop: false, iteration_id: iteration_batches, sourceType: llm, targetType: code}
+      id: llm-to-parse
+      source: llm_eval
+      sourceHandle: source
+      target: code_parse_batch
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data: {isInIteration: false, isInLoop: false, sourceType: iteration, targetType: code}
+      id: iter-batches-to-assemble
+      source: iteration_batches
+      sourceHandle: source
+      target: code_assemble
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data: {isInIteration: false, isInLoop: false, sourceType: code, targetType: http-request}
+      id: assemble-to-save-kb
+      source: code_assemble
+      sourceHandle: source
+      target: http_save_kb
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data: {isInIteration: false, isInLoop: false, sourceType: http-request, targetType: end}
+      id: save-kb-to-end
+      source: http_save_kb
+      sourceHandle: source
+      target: end_node
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        desc: 'Fires automatically on this schedule. Uses the TARGET_USERS/LOOKBACK_DAYS/MAX_MESSAGES/EVAL_BATCH_SIZE environment variables as input, since a trigger has no input form of its own. Edit the time/timezone, or switch to Cron mode, after import.'
+        title: Schedule Trigger
+        type: trigger-schedule
+        mode: visual
+        frequency: daily
+        cron_expression: null
+        visual_config:
+          time: '09:00 AM'
+        timezone: UTC
+      height: 116
+      id: trigger_schedule_1
+      position: {x: 30, y: 240}
+      positionAbsolute: {x: 30, y: 240}
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+
+    - data:
+        desc: 'Splits Target End Users into a list and computes the lookback cutoff timestamp. Everything is sourced from Environment Variables - a Schedule Trigger has no input form of its own, and Dify does not allow a Start node and a Trigger node in the same workflow, so there is no per-run override here (edit TARGET_USERS/LOOKBACK_DAYS in the Environment Variables panel instead).'
+        code: |
+          import time
+
+          def main(env_target_users, env_lookback_days) -> dict:
+              raw = env_target_users or ""
+              users = [u.strip() for u in raw.split(",") if u.strip()]
+              # Defaults to 7 days (not 1) since test/debug conversations in
+              # Studio are usually a few days old by the time you run this -
+              # a 1-day window silently returns zero candidates against them.
+              days = env_lookback_days or 7
+              cutoff_ts = time.time() - float(days) * 86400
+              return {"user_list": users, "cutoff_ts": cutoff_ts}
+        code_language: python3
+        outputs:
+          user_list: {children: null, type: "array[string]"}
+          cutoff_ts: {children: null, type: number}
+        selected: false
+        title: Prep Users + Cutoff
+        type: code
+        variables:
+        - value_selector: [env, TARGET_USERS]
+          variable: env_target_users
+          value_type: string
+        - value_selector: [env, LOOKBACK_DAYS]
+          variable: env_lookback_days
+          value_type: string
+      height: 54
+      id: code_prep
+      position: {x: 334, y: 400}
+      positionAbsolute: {x: 334, y: 400}
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+
+    - data:
+        desc: 'For each target user: fetch their conversations (single page, up to 100) and keep the ones inside the lookback window.'
+        error_handle_mode: continue-on-error
+        flatten_output: true
+        height: 178
+        is_parallel: false
+        iterator_input_type: array[string]
+        iterator_selector: [code_prep, user_list]
+        output_selector: [code_conv_ids, pairs]
+        output_type: array[array[object]]
+        parallel_nums: 3
+        selected: false
+        start_node_id: iteration_usersstart
+        title: Per-User - List Conversations
+        type: iteration
+        width: 588
+      height: 178
+      id: iteration_users
+      position: {x: 638, y: 400}
+      positionAbsolute: {x: 638, y: 400}
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 588
+      zIndex: 1
+
+    - data: {desc: '', isInIteration: true, selected: false, title: '', type: iteration-start}
+      draggable: false
+      height: 48
+      id: iteration_usersstart
+      parentId: iteration_users
+      position: {x: 24, y: 68}
+      positionAbsolute: {x: 662, y: 468}
+      selectable: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom-iteration-start
+      width: 44
+      zIndex: 1002
+
+    - data:
+        desc: 'GET /conversations for this user (page 1, up to 100).'
+        authorization:
+          type: api-key
+          config: {type: bearer, api_key: '{{#env.DIFY_API_KEY#}}', header: ''}
+        body: {type: none, data: ''}
+        headers: ''
+        params: ''
+        isInIteration: true
+        isInLoop: false
+        iteration_id: iteration_users
+        method: get
+        retry_config:
+          enabled: false
+          max_retries: 1
+          retry_interval: 1000
+          exponential_backoff: {enabled: false, multiplier: 2, max_interval: 10000}
+        selected: false
+        timeout: {connect: 10, read: 30, write: 30}
+        title: GET /conversations
+        type: http-request
+        url: '{{#env.DIFY_BASE_URL#}}/conversations?user={{#iteration_users.item#}}&limit=100'
+        variables: []
+      height: 90
+      id: http_conversations
+      parentId: iteration_users
+      position: {x: 128, y: 68}
+      positionAbsolute: {x: 766, y: 468}
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+      zIndex: 1002
+
+    - data:
+        desc: 'Filters conversations by the lookback cutoff and pairs each with this user.'
+        code: |
+          import json
+
+          def main(body: str, cutoff_ts: float, user: str) -> dict:
+              try:
+                  data = json.loads(body or "{}")
+              except Exception:
+                  return {"pairs": []}
+              pairs = [
+                  {"user": user, "conversation_id": c["id"]}
+                  for c in data.get("data", [])
+                  if (c.get("created_at") or 0) >= cutoff_ts
+              ]
+              return {"pairs": pairs}
+        code_language: python3
+        isInIteration: true
+        isInLoop: false
+        iteration_id: iteration_users
+        outputs:
+          pairs: {children: null, type: "array[object]"}
+        selected: false
+        title: Filter by Cutoff
+        type: code
+        variables:
+        - value_selector: [http_conversations, body]
+          variable: body
+          value_type: string
+        - value_selector: [code_prep, cutoff_ts]
+          variable: cutoff_ts
+          value_type: number
+        - value_selector: [iteration_users, item]
+          variable: user
+          value_type: string
+      height: 54
+      id: code_conv_ids
+      parentId: iteration_users
+      position: {x: 432, y: 68}
+      positionAbsolute: {x: 1070, y: 468}
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+      zIndex: 1002
+
+    - data:
+        desc: 'For each (user, conversation) pair found above: fetch its messages (single page, up to 100) and build message/answer candidates.'
+        error_handle_mode: continue-on-error
+        flatten_output: true
+        height: 178
+        is_parallel: false
+        iterator_input_type: array[object]
+        iterator_selector: [iteration_users, output]
+        output_selector: [code_candidates, candidates]
+        output_type: array[array[object]]
+        parallel_nums: 3
+        selected: false
+        start_node_id: iteration_convsstart
+        title: Per-Conversation - List Messages
+        type: iteration
+        width: 812
+      height: 178
+      id: iteration_convs
+      position: {x: 1258, y: 400}
+      positionAbsolute: {x: 1258, y: 400}
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 812
+      zIndex: 1
+
+    - data: {desc: '', isInIteration: true, selected: false, title: '', type: iteration-start}
+      draggable: false
+      height: 48
+      id: iteration_convsstart
+      parentId: iteration_convs
+      position: {x: 24, y: 68}
+      positionAbsolute: {x: 1282, y: 468}
+      selectable: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom-iteration-start
+      width: 44
+      zIndex: 1002
+
+    - data:
+        desc: 'Pulls user/conversation_id out of the loop item so the HTTP node below can reference them directly.'
+        code: |
+          def main(pair: dict) -> dict:
+              pair = pair or {}
+              return {"user": pair.get("user", ""), "conversation_id": pair.get("conversation_id", "")}
+        code_language: python3
+        isInIteration: true
+        isInLoop: false
+        iteration_id: iteration_convs
+        outputs:
+          user: {children: null, type: string}
+          conversation_id: {children: null, type: string}
+        selected: false
+        title: Extract Pair
+        type: code
+        variables:
+        - value_selector: [iteration_convs, item]
+          variable: pair
+          value_type: object
+      height: 54
+      id: code_extract_pair
+      parentId: iteration_convs
+      position: {x: 128, y: 68}
+      positionAbsolute: {x: 1386, y: 468}
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+      zIndex: 1002
+
+    - data:
+        desc: 'GET /messages for this conversation (page 1, up to 100).'
+        authorization:
+          type: api-key
+          config: {type: bearer, api_key: '{{#env.DIFY_API_KEY#}}', header: ''}
+        body: {type: none, data: ''}
+        headers: ''
+        params: ''
+        isInIteration: true
+        isInLoop: false
+        iteration_id: iteration_convs
+        method: get
+        retry_config:
+          enabled: false
+          max_retries: 1
+          retry_interval: 1000
+          exponential_backoff: {enabled: false, multiplier: 2, max_interval: 10000}
+        selected: false
+        timeout: {connect: 10, read: 30, write: 30}
+        title: GET /messages
+        type: http-request
+        url: '{{#env.DIFY_BASE_URL#}}/messages?conversation_id={{#code_extract_pair.conversation_id#}}&user={{#code_extract_pair.user#}}&limit=100'
+        variables: []
+      height: 90
+      id: http_messages
+      parentId: iteration_convs
+      position: {x: 432, y: 68}
+      positionAbsolute: {x: 1690, y: 468}
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+      zIndex: 1002
+
+    - data:
+        desc: 'Filters messages by cutoff, drops empty pairs, and carries feedback + retrieved passages through - exactly like the plugin''s _collect_from_conversation.'
+        code: |
+          import json
+
+          def main(body: str, cutoff_ts: float, user: str) -> dict:
+              try:
+                  data = json.loads(body or "{}")
+              except Exception:
+                  return {"candidates": []}
+              out = []
+              for msg in data.get("data", []):
+                  if (msg.get("created_at") or 0) < cutoff_ts:
+                      continue
+                  message = (msg.get("query") or "").strip()
+                  answer = (msg.get("answer") or "").strip()
+                  if not message or not answer:
+                      continue
+                  feedback = (msg.get("feedback") or {}).get("rating")
+                  passages = [
+                      r.get("content")
+                      for r in (msg.get("retriever_resources") or [])
+                      if r.get("content")
+                  ]
+                  out.append({
+                      "user": user,
+                      "conversation_id": msg.get("conversation_id"),
+                      "message_id": msg.get("id"),
+                      "created_at": msg.get("created_at"),
+                      "message": message,
+                      "answer": answer,
+                      "feedback": feedback,
+                      "passages": passages,
+                  })
+              return {"candidates": out}
+        code_language: python3
+        isInIteration: true
+        isInLoop: false
+        iteration_id: iteration_convs
+        outputs:
+          candidates: {children: null, type: "array[object]"}
+        selected: false
+        title: Build Candidates
+        type: code
+        variables:
+        - value_selector: [http_messages, body]
+          variable: body
+          value_type: string
+        - value_selector: [code_prep, cutoff_ts]
+          variable: cutoff_ts
+          value_type: number
+        - value_selector: [code_extract_pair, user]
+          variable: user
+          value_type: string
+      height: 54
+      id: code_candidates
+      parentId: iteration_convs
+      position: {x: 736, y: 68}
+      positionAbsolute: {x: 1994, y: 468}
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+      zIndex: 1002
+
+    - data:
+        desc: 'Caps the total candidate count at the MAX_MESSAGES env var. Also drops any null entries left behind by a failed fetch (e.g. a conversation/message lookup that errored under continue-on-error), so a partial failure degrades gracefully instead of crashing downstream nodes.'
+        code: |
+          def main(candidates: list, env_max_messages) -> dict:
+              cap = int(env_max_messages) if env_max_messages else 50
+              clean = [c for c in (candidates or []) if c]
+              return {"candidates": clean[:cap]}
+        code_language: python3
+        outputs:
+          candidates: {children: null, type: "array[object]"}
+        selected: false
+        title: Cap to Max Messages
+        type: code
+        variables:
+        - value_selector: [iteration_convs, output]
+          variable: candidates
+          value_type: array[object]
+        - value_selector: [env, MAX_MESSAGES]
+          variable: env_max_messages
+          value_type: string
+      height: 54
+      id: code_cap
+      position: {x: 2126, y: 400}
+      positionAbsolute: {x: 2126, y: 400}
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+
+    - data:
+        desc: 'Chunks candidates into EVAL_BATCH_SIZE groups and builds each batch''s eval-model prompt text - matching the plugin''s _build_batch_user_content.'
+        code: |
+          def main(candidates: list, env_eval_batch_size) -> dict:
+              size = max(1, int(env_eval_batch_size) if env_eval_batch_size else 5)
+              candidates = candidates or []
+              batches = [candidates[i:i + size] for i in range(0, len(candidates), size)]
+              prompts = []
+              for batch in batches:
+                  blocks = []
+                  for i, item in enumerate(batch, start=1):
+                      block = f"--- Pair {i} ---\nUser message: {item['message']}\n\nAgent's answer: {item['answer']}"
+                      passages = item.get("passages")
+                      if passages:
+                          joined = "\n\n---\n\n".join(passages)
+                          block += f"\n\nRetrieved knowledge-base passages available when this answer was generated:\n{joined}"
+                      else:
+                          block += "\n\n(No knowledge-base passages were retrieved for this answer.)"
+                      feedback = item.get("feedback")
+                      if feedback:
+                          block += f"\n\nUser feedback on this answer: {feedback}"
+                      blocks.append(block)
+                  prompts.append("\n\n".join(blocks))
+              return {"batch_prompts": prompts}
+        code_language: python3
+        outputs:
+          batch_prompts: {children: null, type: "array[string]"}
+        selected: false
+        title: Build Eval Batches
+        type: code
+        variables:
+        - value_selector: [code_cap, candidates]
+          variable: candidates
+          value_type: array[object]
+        - value_selector: [env, EVAL_BATCH_SIZE]
+          variable: env_eval_batch_size
+          value_type: string
+      height: 54
+      id: code_batches
+      position: {x: 2430, y: 400}
+      positionAbsolute: {x: 2430, y: 400}
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+
+    - data:
+        desc: 'Judges each batch of message/answer pairs with the Eval Model in one LLM call.'
+        error_handle_mode: continue-on-error
+        flatten_output: true
+        height: 178
+        is_parallel: false
+        iterator_input_type: array[string]
+        iterator_selector: [code_batches, batch_prompts]
+        output_selector: [code_parse_batch, verdicts]
+        output_type: array[array[object]]
+        parallel_nums: 3
+        selected: false
+        start_node_id: iteration_batchesstart
+        title: Per-Batch - Evaluate
+        type: iteration
+        width: 588
+      height: 178
+      id: iteration_batches
+      position: {x: 2734, y: 400}
+      positionAbsolute: {x: 2734, y: 400}
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 588
+      zIndex: 1
+
+    - data: {desc: '', isInIteration: true, selected: false, title: '', type: iteration-start}
+      draggable: false
+      height: 48
+      id: iteration_batchesstart
+      parentId: iteration_batches
+      position: {x: 24, y: 68}
+      positionAbsolute: {x: 2758, y: 468}
+      selectable: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom-iteration-start
+      width: 44
+      zIndex: 1002
+
+    - data:
+        desc: 'IMPORTANT: pick a model you actually have configured in this workspace after import - this default is a guess and will likely need changing.'
+        isInIteration: true
+        isInLoop: false
+        iteration_id: iteration_batches
+        model:
+          provider: langgenius/openrouter/openrouter
+          name: 'google/gemma-4-31b-it:nitro'
+          mode: chat
+        prompt_template:
+        - role: system
+          text: |
+            You are auditing real support-agent conversation logs for quality.
+
+            You may be given the actual knowledge-base passages that were retrieved and available when each answer was generated. If passages are provided for a pair, ground your judgment in them - this is the real source of truth, not general knowledge. If no passages are provided, judge plausibility and internal coherence instead.
+
+            Not every message needs a substantive, KB-grounded answer. A greeting, an off-topic request, or anything outside what this agent is meant to handle may correctly receive a brief acknowledgment, decline, or redirect instead - judge such a response on whether it's the appropriate reply to that message, not on whether it happens to cite a knowledge-base passage. A deliberate redirect isn't a factual claim, so don't mark it ungrounded just because no passage discusses the off-topic subject. Only genuine in-scope questions need to be checked for substantive, grounded correctness.
+
+            For each message/answer pair, judge:
+            - "grounded": for a genuine in-scope question, whether the answer is actually supported by the retrieved passages, with no claims that go beyond or contradict them. For a greeting/off-topic/out-of-scope message where a brief decline or redirect is the appropriate reply, a correct redirect counts as grounded.
+            - "relevant": whether the answer is the appropriate response to what the user was asking or trying to accomplish - which can be a redirect or brief acknowledgment when that's the right call, not only a literal on-topic answer.
+            - "correct": your overall judgment of accuracy and appropriateness, combining groundedness and relevance.
+            - "reusable": whether this Q&A is generalizable knowledge that would help a different user asking something similar - not a one-off case tied to specific names, order IDs, or dates, and not a greeting/small-talk/redirect exchange.
+            - "issue": a short note describing what's wrong (empty string if nothing is wrong).
+            - "corrected_answer": ONLY when "correct" is false, write what the answer should have said instead - grounded in the retrieved passages if provided, otherwise your best correction. Leave as an empty string when "correct" is true.
+
+            If real user feedback is provided for a pair and it's negative ("dislike"), treat that as a strong signal the answer may be wrong, and explain what likely went wrong.
+
+            Additional guidance specific to this app, from its operator:
+            {{#env.CUSTOM_INSTRUCTION#}}
+
+            You will be given a numbered list of message/answer pairs to judge in this single request.
+
+            Respond with ONLY a raw JSON array, no markdown fences, no commentary, with exactly one object per pair, IN THE SAME ORDER as given:
+            [{"grounded": true or false, "relevant": true or false, "correct": true or false, "reusable": true or false, "issue": "...", "corrected_answer": "..."}, ...]
+        - role: user
+          text: '{{#iteration_batches.item#}}'
+        vision: {enabled: false, configs: {variable_selector: []}}
+        memory: {enabled: false, window: {enabled: false, size: 50}}
+        context: {enabled: false, variable_selector: []}
+        structured_output: {enabled: false}
+        retry_config:
+          enabled: false
+          max_retries: 1
+          retry_interval: 1000
+          exponential_backoff: {enabled: false, multiplier: 2, max_interval: 10000}
+        selected: false
+        title: Eval Model
+        type: llm
+      height: 90
+      id: llm_eval
+      parentId: iteration_batches
+      position: {x: 128, y: 68}
+      positionAbsolute: {x: 2862, y: 468}
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+      zIndex: 1002
+
+    - data:
+        desc: 'Parses the eval model''s JSON array reply, falling back to per-item error verdicts (matching the whole batch) on any parse failure or length mismatch.'
+        code: |
+          import json
+          import re
+
+          def main(llm_text: str, batch_text: str) -> dict:
+              batch_len = max(1, (batch_text or "").count("--- Pair "))
+              content = (llm_text or "").strip()
+              content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.MULTILINE).strip()
+
+              def error_verdict(msg: str) -> dict:
+                  return {"grounded": None, "relevant": None, "correct": None, "reusable": None,
+                          "issue": f"eval error: {msg}", "corrected_answer": ""}
+
+              try:
+                  parsed = json.loads(content)
+                  if not isinstance(parsed, list) or len(parsed) != batch_len:
+                      raise ValueError("unexpected shape or length")
+                  verdicts = [{
+                      "grounded": bool(v.get("grounded")),
+                      "relevant": bool(v.get("relevant")),
+                      "correct": bool(v.get("correct")),
+                      "reusable": bool(v.get("reusable")),
+                      "issue": v.get("issue", ""),
+                      "corrected_answer": v.get("corrected_answer") or "",
+                  } for v in parsed]
+              except Exception as e:
+                  verdicts = [error_verdict(str(e)) for _ in range(batch_len)]
+
+              return {"verdicts": verdicts}
+        code_language: python3
+        isInIteration: true
+        isInLoop: false
+        iteration_id: iteration_batches
+        outputs:
+          verdicts: {children: null, type: "array[object]"}
+        selected: false
+        title: Parse Verdicts
+        type: code
+        variables:
+        - value_selector: [llm_eval, text]
+          variable: llm_text
+          value_type: string
+        - value_selector: [iteration_batches, item]
+          variable: batch_text
+          value_type: string
+      height: 54
+      id: code_parse_batch
+      parentId: iteration_batches
+      position: {x: 432, y: 68}
+      positionAbsolute: {x: 3166, y: 468}
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+      zIndex: 1002
+
+    - data:
+        desc: 'Zips candidates with their verdicts (order-preserving, same as the plugin), derives DPO pairs, and renders the summary report.'
+        code: |
+          def main(candidates: list, verdicts: list) -> dict:
+              candidates = candidates or []
+              verdicts = verdicts or []
+              results = []
+              for item, verdict in zip(candidates, verdicts):
+                  entry = {k: v for k, v in item.items() if k != "passages"}
+                  entry["eval"] = verdict
+                  results.append(entry)
+
+              dpo_pairs = [
+                  {"prompt": r["message"], "chosen": r["eval"]["corrected_answer"], "rejected": r["answer"]}
+                  for r in results
+                  if r["eval"].get("correct") is False and r["eval"].get("corrected_answer")
+              ]
+
+              total = len(results)
+              if total == 0:
+                  summary = "## Eval Loop (Workflow Clone) Report\n\nNo messages found in the configured window."
+              else:
+                  correct = sum(1 for r in results if r["eval"].get("correct") is True)
+                  grounded = sum(1 for r in results if r["eval"].get("grounded") is True)
+                  reusable = sum(1 for r in results if r["eval"].get("reusable") is True)
+                  flagged = [r for r in results if r["eval"].get("correct") is False]
+                  eval_errors = sum(1 for r in results if r["eval"].get("correct") is None)
+
+                  def cell(text, limit=80):
+                      text = (text or "").replace("|", "\\|").replace("\n", " ")
+                      return text if len(text) <= limit else text[:limit - 1] + "..."
+
+                  lines = [
+                      "## Eval Loop (Workflow Clone) Report",
+                      "",
+                      f"- **Evaluated:** {total} message(s)",
+                      f"- **Correct:** {correct}/{total} ({correct * 100 // total}%)",
+                      f"- **Grounded:** {grounded}/{total}",
+                      f"- **Reusable candidates:** {reusable}",
+                      f"- **DPO pairs generated:** {len(dpo_pairs)}",
+                      f"- **Eval errors:** {eval_errors}",
+                  ]
+                  if flagged:
+                      lines += ["", "### Flagged (incorrect)", "", "| User | Message | Answer | Issue |", "| --- | --- | --- | --- |"]
+                      for r in flagged:
+                          lines.append(f"| {cell(r['user'], 20)} | {cell(r['message'])} | {cell(r['answer'])} | {cell(r['eval'].get('issue', ''))} |")
+                  summary = "\n".join(lines)
+
+              return {"summary_markdown": summary, "evaluated": total, "dpo_pairs": dpo_pairs}
+        code_language: python3
+        outputs:
+          summary_markdown: {children: null, type: string}
+          evaluated: {children: null, type: number}
+          dpo_pairs: {children: null, type: "array[object]"}
+        selected: false
+        title: Assemble Report
+        type: code
+        variables:
+        - value_selector: [code_cap, candidates]
+          variable: candidates
+          value_type: array[object]
+        - value_selector: [iteration_batches, output]
+          variable: verdicts
+          value_type: array[object]
+      height: 54
+      id: code_assemble
+      position: {x: 3038, y: 400}
+      positionAbsolute: {x: 3038, y: 400}
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+
+    - data:
+        desc: 'Saves the report as a new Document in a Dify Knowledge Base, using the dataset''s own API key - Dataset endpoints are authenticated separately from the App API Key. Requires DATASET_ID and DATASET_API_KEY to be set; if they''re blank this still runs but the dataset will reject the request (check its output body).'
+        authorization:
+          type: api-key
+          config: {type: bearer, api_key: '{{#env.DATASET_API_KEY#}}', header: ''}
+        body:
+          type: json
+          data: '{"name": "Eval Loop Report", "text": {{#code_assemble.summary_markdown#}}, "indexing_technique": "high_quality"}'
+        headers: 'Content-Type:application/json'
+        params: ''
+        method: post
+        retry_config:
+          enabled: false
+          max_retries: 1
+          retry_interval: 1000
+          exponential_backoff: {enabled: false, multiplier: 2, max_interval: 10000}
+        selected: false
+        timeout: {connect: 10, read: 30, write: 30}
+        title: Save to Knowledge Base
+        type: http-request
+        url: '{{#env.DIFY_BASE_URL#}}/datasets/{{#env.DATASET_ID#}}/document/create-by-text'
+        variables: []
+      height: 90
+      id: http_save_kb
+      position: {x: 3342, y: 400}
+      positionAbsolute: {x: 3342, y: 400}
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+
+    - data:
+        desc: 'Every run shows up in this Workflow app''s own Logs tab with summary_markdown as the readable output.'
+        outputs:
+        - {value_selector: [code_assemble, summary_markdown], value_type: string, variable: summary_markdown}
+        - {value_selector: [code_assemble, evaluated], value_type: number, variable: evaluated}
+        - {value_selector: [code_assemble, dpo_pairs], value_type: "array[object]", variable: dpo_pairs}
+        - {value_selector: [http_save_kb, body], value_type: string, variable: saved_to_dataset_response}
+        selected: false
+        title: End
+        type: end
+      height: 90
+      id: end_node
+      position: {x: 3646, y: 400}
+      positionAbsolute: {x: 3646, y: 400}
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+
+    viewport: {x: 0, y: -100, zoom: 0.35}
