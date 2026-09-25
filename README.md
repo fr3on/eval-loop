@@ -1,6 +1,6 @@
 ## Eval Loop
 
-**Version:** 0.1.0
+**Version:** 0.1.1
 **Type:** tool
 
 Pulls a Dify chat app's real conversation logs and evaluates the Q&A for groundedness, relevance, correctness, and reusability - using the actual knowledge-base passages Dify already retrieved for each answer, plus any user feedback already recorded. Returns a structured report; it does not create annotations or modify anything. It can evaluate specific end users' conversations, or - with a console access token - every conversation in the app.

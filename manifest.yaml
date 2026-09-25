@@ -1,4 +1,4 @@
-version: 0.1.0
+version: 0.1.1
 type: plugin
 author: fr3on
 name: eval-loop
@@ -32,7 +32,7 @@ plugins:
   tools:
     - provider/eval_loop.yaml
 meta:
-  version: 0.1.0
+  version: 0.1.1
   arch:
     - amd64
     - arm64
