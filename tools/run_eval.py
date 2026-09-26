@@ -220,10 +220,11 @@ class RunEvalTool(Tool):
     def _invoke(self, tool_parameters: Mapping[str, Any]) -> Generator[ToolInvokeMessage, None, None]:
         credentials = self.runtime.credentials
 
-        app_id = (credentials.get("app") or {}).get("app_id")
+        app_id = (tool_parameters.get("app") or {}).get("app_id")
         base_url = (credentials.get("dify_base_url") or "").rstrip("/")
         api_key = credentials.get("dify_api_key")
-        eval_model = credentials.get("eval_model")
+        eval_model = tool_parameters.get("eval_model")
+        save_to_dataset = str(credentials.get("save_to_dataset", "off")).lower() in ("on", "true", "1")
         target_users_raw = tool_parameters.get("target_users") or ""
         console_token = (tool_parameters.get("console_access_token") or "").strip()
         if console_token.lower().startswith("bearer "):
@@ -232,10 +233,10 @@ class RunEvalTool(Tool):
         missing = [
             name
             for name, value in (
-                ("app", app_id),
-                ("dify_base_url", base_url),
-                ("dify_api_key", api_key),
-                ("eval_model", eval_model),
+                ("App", app_id),
+                ("Dify API Base URL", base_url),
+                ("App API Key", api_key),
+                ("Eval Model", eval_model),
             )
             if not value
         ]
@@ -399,9 +400,9 @@ class RunEvalTool(Tool):
             "summary_markdown": self._build_summary_markdown(results, dpo_pairs, errors),
         }
 
-        if credentials.get("save_to_dataset", False) and not results:
+        if save_to_dataset and not results:
             report["saved_to_dataset"] = {"saved": False, "error": "No messages evaluated; nothing to save."}
-        elif credentials.get("save_to_dataset", False):
+        elif save_to_dataset:
             dataset_id = credentials.get("dataset_id")
             dataset_api_key = credentials.get("dataset_api_key")
             if not dataset_id or not dataset_api_key:

@@ -9,13 +9,13 @@ class EvalLoopProvider(ToolProvider):
     def _validate_credentials(self, credentials: Mapping[str, Any]) -> None:
         missing = [
             name
-            for name in ("app", "dify_base_url", "dify_api_key", "eval_model")
+            for name in ("dify_base_url", "dify_api_key")
             if not credentials.get(name)
         ]
         if missing:
             raise ToolProviderCredentialValidationError(f"Missing required settings: {', '.join(missing)}")
 
-        if credentials.get("save_to_dataset") and not (
+        if str(credentials.get("save_to_dataset", "off")).lower() in ("on", "true", "1") and not (
             credentials.get("dataset_id") and credentials.get("dataset_api_key")
         ):
             raise ToolProviderCredentialValidationError(

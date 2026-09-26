@@ -1,12 +1,4 @@
 credentials_for_provider:
-  app:
-    type: app-selector
-    scope: chat
-    required: true
-    label:
-      en_US: App
-    placeholder:
-      en_US: The Dify chat app whose logs you want to evaluate
   dify_base_url:
     type: text-input
     required: true
@@ -22,20 +14,19 @@ credentials_for_provider:
       en_US: App API Key
     placeholder:
       en_US: The selected app's own Service API key (used to pull conversations, messages, and feedback)
-  eval_model:
-    type: model-selector
-    scope: llm
-    required: true
-    label:
-      en_US: Eval Model
-    placeholder:
-      en_US: The model used to judge each Q&A's correctness and reusability
   save_to_dataset:
-    type: boolean
+    type: select
     required: false
     label:
       en_US: Save Report to Knowledge Base
-    default: false
+    options:
+      - value: "off"
+        label:
+          en_US: "Off"
+      - value: "on"
+        label:
+          en_US: "On"
+    default: "off"
   dataset_id:
     type: text-input
     required: false
