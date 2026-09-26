@@ -1,6 +1,6 @@
 ## Eval Loop
 
-**Version:** 0.1.3
+**Version:** 0.1.2
 **Type:** tool
 
 Pulls a Dify chat app's real conversation logs and evaluates the Q&A for groundedness, relevance, correctness, and reusability - using the actual knowledge-base passages Dify already retrieved for each answer, plus any user feedback already recorded. Returns a structured report; it does not create annotations or modify anything. It can evaluate specific end users' conversations, or - with a console access token - every conversation in the app.
@@ -33,11 +33,10 @@ Real user feedback (like/dislike), where already recorded on a message, is passe
 
 ### Settings
 
-Set once, when you add Eval Loop's credentials to your workspace (**Tools → Eval Loop → Authorize**). Dify's authorization form only supports plain fields (it can't render app or model pickers), so the app is identified by its ID here, and the **Eval Model** picker lives on the Run Eval node (see below):
+Set once, when you add Eval Loop's credentials to your workspace (**Tools → Eval Loop → Authorize**). Dify's authorization form only supports plain fields, so the **App** and **Eval Model** pickers live on the Run Eval node instead (see below):
 
 | Setting | Required | Description |
 | --- | --- | --- |
-| App ID | Yes | The ID of the Dify chat app whose logs you want to evaluate - the UUID in its Studio URL (`/app/<app-id>/...`). On each run the plugin looks the app up and checks that the App API Key below actually belongs to it (and that it is a chat app), and stops with an error if not. |
 | Dify API Base URL | Yes | The base URL of the Dify instance hosting that app, e.g. `https://api.dify.ai/v1` or your self-hosted instance's `/v1` URL. |
 | App API Key | Yes | The selected app's own Service API key. Used to call that app's `/conversations` and `/messages` endpoints directly - the plugin SDK's built-in invocation doesn't expose log access, only chat/completion/workflow calls. |
 | Save Report to Knowledge Base | No (Off/On) | When on, each run's report is saved as a new Document in a Dify Knowledge Base, giving you a persistent, searchable history. The document holds the summary plus every evaluated message (verdicts, issue, corrected answer). Runs that evaluate nothing aren't saved. Default: Off. |
@@ -48,6 +47,7 @@ Set per run, on the **Run Eval** tool node itself (so the same authorized tool c
 
 | Parameter | Required | Description |
 | --- | --- | --- |
+| App | Yes | The Dify chat app whose logs you want to evaluate. On each run the plugin checks that the App API Key from the authorization actually belongs to this app (and that it is a chat app), and stops with an error if not. |
 | Eval Model | Yes | The model used to judge each Q&A pair. |
 | Target End Users | No | Comma-separated Dify end-user identifiers to pull conversations for, e.g. `user-123,user-456`. Dify's Service API scopes conversation listing per end user, so to check specific users you list them. **Leave empty to load ALL conversations** - this uses the console API and needs a Console Access Token (below). |
 | Console Access Token | Only if Target End Users is empty | A Dify console `access_token`, used to list every conversation like Studio's Logs tab. Get it from browser DevTools -> Application -> Local Storage -> `console_token`, or from the `Authorization` header of any Studio request. **It expires**, so refresh it when a run reports a console auth failure. It is a full session for that account: use a dedicated low-privilege account, and note it is stored in the workflow's node config. |
@@ -65,10 +65,10 @@ https://github.com/fr3on/eval-loop
 
 ### Setup
 
-1. In the Dify app you want to evaluate, note its **App ID** (the UUID in its Studio URL) and go to **API Access** to generate (or copy) a Service API key.
+1. In the Dify app you want to evaluate, go to **API Access** and generate (or copy) a Service API key.
 2. Note the app's `user` identifiers - whatever string is passed as `user` when the app is invoked (via the chat API, a workflow, or any client integration). If nothing sets this explicitly, every conversation falls back to one shared default user, and you can pass that instead.
-3. Install this plugin. In a Workflow's Tools panel (or **Tools → Eval Loop**), authorize it: fill in the App ID, the Dify API Base URL and the App API Key (and the Knowledge Base settings if you want reports saved).
-4. Drop a **Run Eval** node onto your workflow canvas and pick the **Eval Model**, then fill in the other per-run parameters (target end users, lookback window, etc.).
+3. Install this plugin. In a Workflow's Tools panel (or **Tools → Eval Loop**), authorize it: fill in the Dify API Base URL and the App API Key (and the Knowledge Base settings if you want reports saved).
+4. Drop a **Run Eval** node onto your workflow canvas and pick the **App** and **Eval Model**, then fill in the other per-run parameters (target end users, lookback window, etc.).
 
 ### Triggering a run
 

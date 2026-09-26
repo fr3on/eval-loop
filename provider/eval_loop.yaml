@@ -1,11 +1,4 @@
 credentials_for_provider:
-  app_id:
-    type: text-input
-    required: true
-    label:
-      en_US: App ID
-    placeholder:
-      en_US: "The Dify chat app's ID - the UUID in its Studio URL (/app/<app-id>/...)"
   dify_base_url:
     type: text-input
     required: true

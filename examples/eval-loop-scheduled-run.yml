@@ -138,7 +138,7 @@ workflow:
       type: custom
       width: 244
     - data:
-        desc: 'Evaluates Support v1.1''s recent conversation logs. Requires the eval-loop plugin to be installed and its credentials (App ID, Dify API Base URL and App API Key) authorized, and the Eval Model picked on this node, before it will run.'
+        desc: 'Evaluates Support v1.1''s recent conversation logs. Requires the eval-loop plugin to be installed and its credentials (Dify API Base URL and App API Key) authorized, and the App and Eval Model picked on this node, before it will run.'
         title: Run Eval
         type: tool
         provider_id: 'fr3on/eval-loop/eval_loop'
@@ -151,6 +151,24 @@ workflow:
         is_team_authorization: true
         output_schema: null
         paramSchemas:
+        - name: app
+          type: app-selector
+          form: form
+          required: true
+          default: null
+          min: null
+          max: null
+          precision: null
+          options: []
+          placeholder: null
+          template: null
+          scope: chat
+          auto_generate: null
+          label:
+            en_US: App
+          human_description:
+            en_US: "The Dify chat app whose conversation logs you want to evaluate."
+          llm_description: "The chat app whose logs to evaluate."
         - name: eval_model
           type: model-selector
           form: form
@@ -296,6 +314,9 @@ workflow:
             en_US: "Optional: describe this app's expected behavior so the eval judges it correctly."
           llm_description: "Optional app-specific guidance for how to judge correctness."
         tool_configurations:
+          app:
+            type: constant
+            value: null
           eval_model:
             type: constant
             value: null
@@ -322,6 +343,7 @@ workflow:
             value: ''
         tool_parameters: {}
         params:
+          app: ''
           eval_model: ''
           target_users: ''
           console_base_url: ''

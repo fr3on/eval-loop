@@ -9,7 +9,7 @@ class EvalLoopProvider(ToolProvider):
     def _validate_credentials(self, credentials: Mapping[str, Any]) -> None:
         missing = [
             name
-            for name in ("app_id", "dify_base_url", "dify_api_key")
+            for name in ("dify_base_url", "dify_api_key")
             if not credentials.get(name)
         ]
         if missing:

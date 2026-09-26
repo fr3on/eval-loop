@@ -220,7 +220,7 @@ class RunEvalTool(Tool):
     def _invoke(self, tool_parameters: Mapping[str, Any]) -> Generator[ToolInvokeMessage, None, None]:
         credentials = self.runtime.credentials
 
-        app_id = str(credentials.get("app_id") or "").strip()
+        app_id = (tool_parameters.get("app") or {}).get("app_id")
         base_url = (credentials.get("dify_base_url") or "").rstrip("/")
         api_key = credentials.get("dify_api_key")
         eval_model = tool_parameters.get("eval_model")
@@ -233,7 +233,7 @@ class RunEvalTool(Tool):
         missing = [
             name
             for name, value in (
-                ("App ID", app_id),
+                ("App", app_id),
                 ("Dify API Base URL", base_url),
                 ("App API Key", api_key),
                 ("Eval Model", eval_model),
