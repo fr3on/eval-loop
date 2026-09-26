@@ -146,14 +146,14 @@ Both options can be used together.
 
 The Run Eval node outputs `review_items` (and `review_count`): every answer that was judged incorrect, couldn't be judged, or got a thumbs-down from the end user - each with the user's message, the answer, the issue, the suggested corrected answer, and the conversation/message IDs.
 
-`examples/eval-loop-scheduled-run.yml` wires this up: **Schedule Trigger -> Run Eval -> Build Slack message (Code) -> Anything to review? (IF/ELSE) -> Post to Slack (HTTP Request) -> End**. Nothing is posted on runs with nothing to review.
+`examples/eval-loop-scheduled-run.yml` wires this up: **Schedule Trigger -> Run Eval -> Build Slack message (Code) -> Anything to review? (IF/ELSE) -> Post to Slack (Slack plugin, Send Message) -> End**. Nothing is posted on runs with nothing to review.
 
 To use it:
-1. In Slack, create an Incoming Webhook for the review channel (Slack Apps -> Incoming Webhooks) and copy its URL.
-2. Import the example, then paste the URL into the `SLACK_WEBHOOK_URL` environment variable (stored as a secret).
-3. Adjust the schedule and Run Eval settings.
+1. Install and authorize the official **Slack** plugin (Tools -> Slack) with a bot token that has `chat:write`, and invite the bot to the review channel (`/invite @your-bot`).
+2. Import the example (it declares the Slack plugin as a dependency), then set the `SLACK_CHANNEL` environment variable to the channel ID (e.g. `C0123456789`) or name (e.g. `#support-eval-review`).
+3. Authorize Eval Loop, pick the Eval Model on the Run Eval node, and adjust the schedule and Run Eval settings.
 
-The message lists up to 10 items (each field trimmed to 500 characters) and points to the workflow Logs / Knowledge Base report for the rest. If the Slack post fails, the run fails visibly in the workflow's Logs after 3 retries. Slack messages here are one-way notifications; approve/reject buttons would need a full Slack app rather than a webhook.
+The message lists up to 10 items (each field trimmed to 500 characters) and points to the workflow Logs / Knowledge Base report for the rest. If the Slack post fails, the run fails visibly in the workflow's Logs after 3 retries. The message is a one-way notification; approve/reject buttons would need a custom Slack app with interactivity.
 
 ### Limitations
 

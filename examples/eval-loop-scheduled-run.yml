@@ -1,24 +1,29 @@
 app:
-  description: 'Runs Eval Loop against Support v1.1 on a daily schedule, exposes the results as this Workflow app''s own Logs, and posts answers that need human review to a Slack channel.'
+  description: 'Runs Eval Loop against Support v1.1 on a daily schedule, exposes the results as this Workflow app''s own Logs, and posts answers that need human review to a Slack channel with the Slack plugin.'
   icon: 📊
   icon_background: '#E0F2FE'
   mode: workflow
   name: Eval Loop - Scheduled Run
   use_icon_as_answer_icon: false
-dependencies: []
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/slack:0.4.1@4a5f4c1c11282f9a55a215a8fc1ce7da6e1c325a31efdf2f664f4477145fcf21
+    version: null
 kind: app
 version: 0.3.1
 workflow:
   conversation_variables: []
   environment_variables:
-  - description: 'Slack Incoming Webhook URL for the human-review channel (Slack > Apps > Incoming Webhooks). Leave empty only if you remove the Slack nodes.'
+  - description: 'Slack channel for the human-review messages: a channel ID (e.g. C0123456789) or name (e.g. #support-eval-review). The Slack app must be a member of the channel.'
     id: 5b7a6f1e-3c2d-4e8a-9f10-7d2a4c6b8e01
-    name: SLACK_WEBHOOK_URL
+    name: SLACK_CHANNEL
     selector:
       - env
-      - SLACK_WEBHOOK_URL
+      - SLACK_CHANNEL
     value: ''
-    value_type: secret
+    value_type: string
   features:
     file_upload:
       enabled: false
@@ -76,21 +81,21 @@ workflow:
         isInIteration: false
         isInLoop: false
         sourceType: if-else
-        targetType: http-request
-      id: slack-if-true-to-http
+        targetType: tool
+      id: slack-if-true-to-slack
       source: 'slack_if_1'
       sourceHandle: "true"
-      target: 'slack_http_1'
+      target: 'slack_tool_1'
       targetHandle: target
       type: custom
       zIndex: 0
     - data:
         isInIteration: false
         isInLoop: false
-        sourceType: http-request
+        sourceType: tool
         targetType: end
-      id: slack-http-to-end
-      source: 'slack_http_1'
+      id: slack-tool-to-end
+      source: 'slack_tool_1'
       sourceHandle: source
       target: 'end_1'
       targetHandle: target
@@ -343,9 +348,7 @@ workflow:
       width: 244
     - data:
         code: |
-          import json
-
-          def main(review_items: list, evaluated: int) -> dict:
+            def main(review_items: list, evaluated: int) -> dict:
               items = review_items or []
               limit = 10
 
@@ -371,12 +374,12 @@ workflow:
 
               # Slack messages are capped at ~40k characters; stay well below.
               text = "\n".join(lines)[:35000]
-              return {"payload": json.dumps({"text": text}), "review_count": len(items)}
+              return {"text": text, "review_count": len(items)}
 
         code_language: python3
-        desc: 'Formats the flagged/disliked/errored answers from Run Eval into a Slack message (max 10 shown) and counts them.'
+        desc: 'Formats the flagged/disliked/errored answers from Run Eval into a Slack mrkdwn message (max 10 shown) and counts them.'
         outputs:
-          payload:
+          text:
             children: null
             type: string
           review_count:
@@ -438,36 +441,88 @@ workflow:
       type: custom
       width: 244
     - data:
-        authorization:
-          config: null
-          type: no-auth
-        body:
-          data:
-          - id: slack-body-1
-            key: ''
-            type: text
-            value: '{{#slack_code_1.payload#}}'
-          type: json
-        desc: 'Posts the review list to the Slack Incoming Webhook in SLACK_WEBHOOK_URL. A Slack failure fails the run visibly in Logs.'
-        headers: ''
-        method: post
-        params: ''
+        desc: 'Posts the review list to the Slack channel in SLACK_CHANNEL using the Slack plugin (authorize it once in Tools -> Slack). A Slack failure fails the run visibly in Logs after 3 retries.'
+        is_team_authorization: true
+        paramSchemas:
+        - name: channel
+          type: string
+          form: llm
+          required: true
+          default: null
+          min: null
+          max: null
+          precision: null
+          options: []
+          placeholder: null
+          template: null
+          scope: null
+          auto_generate: null
+          label:
+            en_US: Channel
+          human_description:
+            en_US: "The channel, private group, or user (DM) to send the message to. Accepts a channel ID or a channel name."
+          llm_description: "The channel to send the message to."
+        - name: text
+          type: string
+          form: llm
+          required: true
+          default: null
+          min: null
+          max: null
+          precision: null
+          options: []
+          placeholder: null
+          template: null
+          scope: null
+          auto_generate: null
+          label:
+            en_US: Message
+          human_description:
+            en_US: "The text of the message to send. Supports Slack mrkdwn formatting."
+          llm_description: "The text of the message to send."
+        - name: thread_ts
+          type: string
+          form: llm
+          required: false
+          default: null
+          min: null
+          max: null
+          precision: null
+          options: []
+          placeholder: null
+          template: null
+          scope: null
+          auto_generate: null
+          label:
+            en_US: Thread Timestamp
+          human_description:
+            en_US: "Optional. The ts of a parent message to reply to it in a thread."
+          llm_description: "Optional parent message ts."
+        plugin_unique_identifier: 'langgenius/slack:0.4.1@4a5f4c1c11282f9a55a215a8fc1ce7da6e1c325a31efdf2f664f4477145fcf21'
+        provider_id: 'langgenius/slack/slack'
+        provider_name: 'langgenius/slack/slack'
+        provider_type: builtin
         retry_config:
           max_retries: 3
           retry_enabled: true
           retry_interval: 1000
-        ssl_verify: true
-        timeout:
-          max_connect_timeout: 0
-          max_read_timeout: 0
-          max_write_timeout: 0
         selected: false
         title: Post to Slack
-        type: http-request
-        url: '{{#env.SLACK_WEBHOOK_URL#}}'
-        variables: []
+        tool_configurations: {}
+        tool_description: 'Send a message to a Slack channel, private group, or direct message.'
+        tool_label: Send Message
+        tool_name: send_message
+        tool_node_version: '2'
+        tool_parameters:
+          channel:
+            type: mixed
+            value: '{{#env.SLACK_CHANNEL#}}'
+          text:
+            type: mixed
+            value: '{{#slack_code_1.text#}}'
+        type: tool
       height: 90
-      id: 'slack_http_1'
+      id: 'slack_tool_1'
       position:
         x: 1246
         y: 150
