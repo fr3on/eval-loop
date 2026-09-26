@@ -11,16 +11,6 @@ identity:
   label:
     en_US: Run Eval
 parameters:
-  - name: app
-    type: app-selector
-    scope: chat
-    form: form
-    required: true
-    label:
-      en_US: App
-    human_description:
-      en_US: "The Dify chat app whose conversation logs you want to evaluate. Its Service API key must be the App API Key set in Eval Loop's authorization."
-    llm_description: "The Dify chat app whose logs to evaluate."
   - name: eval_model
     type: model-selector
     scope: llm
